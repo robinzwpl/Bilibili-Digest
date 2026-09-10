@@ -1,6 +1,6 @@
 {
   "name": "bilibili-digest",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Turn bilibili videos into learning resources with transcripts, bilingual translation, AI overviews, and notes.",
   "license": "MIT",

@@ -34,6 +34,16 @@ temporary_dir="$(mktemp -d "$dist_dir/.bilibili-digest-package.XXXXXX")"
 temporary_zip="$temporary_dir/bilibili-digest.zip"
 output_zip="$dist_dir/bilibili-digest-v$version.zip"
 
+# Windows-native zip/unzip cannot resolve MSYS-style paths such as /d/...
+# so hand them a native path. Everywhere else keeps the POSIX form.
+to_native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 cleanup() {
   if [[ -f "$temporary_zip" ]]; then
     rm -f "$temporary_zip"
@@ -48,10 +58,10 @@ trap cleanup EXIT
   cd "$repo_root"
   # Exclude platform-specific extra attributes so identical source files
   # produce the same archive checksum across repeated local builds.
-  zip -X -q "$temporary_zip" "${release_files[@]}"
+  zip -X -q "$(to_native_path "$temporary_zip")" "${release_files[@]}"
 )
 
-if unzip -Z1 "$temporary_zip" | grep -En '(^|/)(config\.js|\.DS_Store|\.git)(/|$)' >&2; then
+if unzip -Z1 "$(to_native_path "$temporary_zip")" | grep -En '(^|/)(config\.js|\.DS_Store|\.git)(/|$)' >&2; then
   printf 'Packaging failed: a forbidden private path entered the ZIP\n' >&2
   exit 1
 fi
@@ -60,6 +70,10 @@ mv -f "$temporary_zip" "$output_zip"
 rmdir "$temporary_dir"
 trap - EXIT
 
-checksum="$(shasum -a 256 "$output_zip" | awk '{print $1}')"
+if command -v shasum >/dev/null 2>&1; then
+  checksum="$(shasum -a 256 "$output_zip" | awk '{print $1}')"
+else
+  checksum="$(sha256sum "$output_zip" | awk '{print $1}')"
+fi
 printf 'Created %s\n' "$output_zip"
 printf 'SHA-256: %s\n' "$checksum"

@@ -19,6 +19,14 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 ![Bilibili Digest 双语演示](Bilibili%20Digest%20demo%20bilingual.png)
 
+## v1.4.0 更新
+
+- 为完全没有字幕轨的视频新增语音转写兜底。默认关闭，不增加任何安装期权限，并且只会在你点击 **转写音频** 时运行。
+- 音频直接从 B 站的 DASH 流中拉取，再上传给你选择的托管转写服务（默认预置硅基流动，也支持 OpenAI、Groq 或任意兼容 OpenAI 的接口）。
+- 转写得到的字幕会按同一结构缓存，因此概览、笔记、搜索、点击跳转和选中讲解在转写视频上同样可用。
+- 事前告知：音频时长、大小与已配置的上限都会先算出来，超长视频在下载之前就会被拒绝。
+- Whisper 系列模型的时间戳保持精确；只返回文本的模型同样可用，时间轴为估算值，并且字幕上方会明确标注是哪种。
+
 ## v1.3.0 更新
 
 - 在视频选集中切换分 P 时，侧边栏会重新加载为所选分 P，不再停留在上一个分 P。
@@ -37,7 +45,7 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 你的 Agent 应该帮你：
 
 1. 先询问你想把项目长期保存在哪里，再下载或克隆到那里，并告诉你准确的完整路径。如果你需要建议，可以推荐 macOS 或 Linux 上的 `~/Documents/bilibili-digest`，或 Windows 上的 `%USERPROFILE%\Documents\bilibili-digest`。
-2. 打开下方 Supadata 和 DeepSeek 官方页面，指导你创建自己的账号。
+2. 打开下方 DeepSeek 官方页面，指导你创建自己的账号（如需语音转写兜底，再打开对应转写服务商的页面）。
 3. 指导你在 Chrome 中通过“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹。
 4. 告诉你应该在扩展的“设置”页面哪个位置填写 API Key。
 5. 打开一个带字幕的 bilibili 视频，确认字幕和翻译功能可以使用。
@@ -63,29 +71,36 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 ## 设置 API Key
 
-Bilibili Digest 需要你在自己的服务账号中准备两个 Key：
+Bilibili Digest 使用你自己的服务账号，只有一个 Key 是必需的：
 
-1. **Supadata API Key**，用于获取 bilibili 字幕。
-2. **DeepSeek API Key**，用于生成概览、讲解内容、翻译和自动润色笔记。
+1. **DeepSeek API Key**，用于生成概览、讲解内容、翻译和自动润色笔记。
+2. **转写服务 API Key**（可选），仅当你需要为完全没有字幕轨的视频启用语音转写兜底时才需要。
 
-### 字幕来源（当前版本）
+字幕本身不需要任何 Key，它来自 B 站自带的字幕轨。
 
-当前版本的字幕来自 B 站自带的字幕轨，不经过 Supadata：
+### 字幕来源
+
+字幕来自 B 站自带的字幕轨：
 
 - 扩展通过 B 站官方接口链路（`x/web-interface/view` → `x/player/wbi/v2` → 字幕 CDN）获取 CC 字幕与 AI 字幕。
 - 字幕无需第三方 API Key，只需在当前 Chrome 个人资料中登录 bilibili.com。
 - 中文 CC 字幕与 AI 中文字幕（`ai-zh`）直接显示；外语字幕自动翻译为简体中文。
-- Supadata API Key 保留给后续的语音转写兜底（阶段二），用于为没有任何字幕轨的视频转写音频。
 
-### 获取 Supadata API Key
+### 语音转写兜底（可选）
 
-1. 打开 Supadata 官方[注册页面](https://dash.supadata.ai/auth/sign-up)。
-2. 创建账号并完成简短的新手引导。
-3. Supadata 会在新手引导过程中自动生成 API Key。
-4. 之后可以随时打开 [Supadata 控制台](https://dash.supadata.ai/)查找或管理 Key。
-5. 复制 Key，并粘贴到 Bilibili Digest 设置中的 **Supadata API key**。
+有些视频完全没有字幕轨。Bilibili Digest 可以覆盖这类视频：下载该视频的音频，发送给由你选择、由你付费的托管转写服务。该功能默认关闭，在打开之前不会申请任何额外权限，并且只会在你点击 **转写音频** 时运行。
 
-如果页面流程发生变化，请查看 [Supadata 官方文档](https://docs.supadata.ai/)。
+1. 先在受支持的服务商申请 Key。[硅基流动](https://cloud.siliconflow.cn/account/ak) 已内置为默认选项，因为国内可直连；OpenAI 与 Groq 也已内置，另外任何兼容 OpenAI `/audio/transcriptions` 的接口都可以使用。
+2. 打开 Bilibili Digest 设置，打开 **启用语音转写兜底**。
+3. 粘贴 Key，选择模型，然后保存。此时 Chrome 会为这一个接口地址申请权限，请选择允许。
+4. 打开一个没有字幕的视频，面板会给出 **转写音频（约 N 分钟）** 按钮。在你点击之前，什么都不会发生。
+
+模型的选择决定时间戳质量：
+
+- `whisper-large-v3`、`whisper-1`、`whisper-large-v3-turbo` 会返回逐段时间戳，点击跳转保持精确。
+- `FunAudioLLM/SenseVoiceSmall` 等只返回纯文本的模型更便宜、更快，但时间轴会根据音频总时长估算，面板会在字幕上方明确说明。
+
+音频默认上限为 24 MB，可在 1 到 100 MB 之间调整。长视频会产生更大的音频文件，请提高上限或选择较短的分 P。
 
 ### 获取 DeepSeek API Key
 
@@ -113,40 +128,50 @@ API Key 和设置保存在你设备上的 Chrome 扩展本地存储中。发布�
 
 ## 使用 Bilibili Digest
 
-1. 打开一个有字幕的普通 bilibili 视频页面。
+1. 打开一个普通的 bilibili 视频页面。
 2. 点击 Bilibili Digest 扩展图标，打开侧边栏。
-3. 阅读带时间戳的字幕，或选择 **Original**、**中文**、**双语**。
-4. 打开 **Overview**，查看 AI 生成的章节和重点引用。
-5. 选中字幕，获取 AI 内容讲解。
-6. 从播放器或重点引用中保存笔记，之后可以在 **Notes** 中查看。
+3. 阅读带时间戳的字幕：中文字幕直接显示，外语字幕自动翻译为简体中文，点击任意一行即可让播放器跳转到对应位置。
+4. 可以随意切换视频选集，面板会跟随你选中的分 P。
+5. 如果视频没有字幕且你已启用兜底功能，点击 **转写音频**。
+6. 打开 **Overview**，查看 AI 生成的章节和重点引用。
+7. 选中字幕，获取 AI 内容讲解。
+8. 从播放器或重点引用中保存笔记，之后可以在 **Notes** 中查看。
 
 ## 当前支持范围
 
 - Chrome 116 或更高版本。
 - 标准的 `bilibili.com/watch` 视频页面。
-- Supadata 能够返回的原生字幕。Bilibili Digest 会优先请求英文字幕，也可能显示其他可用的原生语言。
-- 原文、简体中文和双语对照字幕。
+- 来自 B 站自带 CC 与 AI 字幕轨的字幕。优先中文字幕（CC 优先于 `ai-zh`），外语字幕翻译为简体中文。
+- 带时间戳的完整字幕，支持点击跳转、页内搜索、复制和导出。
 - AI 概览、选中文本讲解、翻译和自动润色笔记。
+- 语音转写兜底：为完全没有字幕轨的视频服务，需要你打开开关并点击 **转写音频**。
 - 本地笔记，以及最近字幕、概览和翻译的本地缓存。
 - 发布版本的所有 AI 功能都使用 DeepSeek V4 Flash。其他服务需要修改本地代码，不属于发布版本的支持范围。
 
-Shorts、直播、私密视频、受访问限制的视频，以及没有原生字幕的视频可能无法使用。目前没有测试 Firefox、Safari、移动浏览器或其他 Chromium 浏览器。
+选集分 P 通过地址栏识别，因此切换选集会重新加载正确的分 P。Shorts、直播、私密视频、受访问限制的视频，以及既没有字幕也拿不到音频流的视频可能无法使用。目前没有测试 Firefox、Safari、移动浏览器或其他 Chromium 浏览器。
 
-Bilibili Digest 强制使用 Supadata 的 `mode=native`，不会在没有原生字幕时请求 AI 生成转录，也不会在本地转录音频。
+Bilibili Digest 不会请求 B 站生成 AI 字幕，也不会在本地转录音频。唯一的兜底路径是你自己配置的托管转写服务，并且只在你点击时运行。
 
-## Supadata 免费额度和请求成本
+## 转写成本与限制
 
-截至 2026 年 8 月 9 日，[Supadata 价格页面](https://supadata.ai/pricing)显示免费版每月提供 **100 credits**，不需要信用卡，未使用的额度不会结转。价格可能变化，使用前请查看最新页面。
+转写按音频分钟数由你选择的服务商计费。Bilibili Digest 不收款、不转售服务，也绝不会自行启动转写：
 
-[Supadata 字幕接口文档](https://docs.supadata.ai/get-transcript)说明了不同模式的计费方式：
+- 面板会先把估算放在按钮上（**转写音频（约 N 分钟）**），让你在知道花费的前提下决定。
+- 预检会先算出音频时长和大小，之后再开始下载。
+- 超过你配置上限的音频会在上传之前被拒绝，而不是传完之后失败。
+- 结果按视频分 P 缓存，再次打开同一分 P 不会产生任何费用。
 
-- 获取一次原生字幕消耗 **1 credit**，与视频时长无关。
-- AI 生成字幕每分钟消耗 **2 credits**。Bilibili Digest 不会使用这条路径，因为它强制使用 `mode=native`。
-- 如果没有可用原生字幕并返回 HTTP `206`，仍会消耗 **1 credit**。
+下载音频并上传给你服务商的耗时与视频长度成正比：使用较快的模型时，大约每 10 到 20 分钟音频需要 1 分钟处理时间。面板会显示当前进行到哪一步。
 
-按照当前只获取原生字幕的方式，如果每次请求都成功，免费版每月大约可以查询 100 个视频。重试和没有字幕的查询也会消耗额度，所以实际成功数量可能更少。
+内置服务及其 Key 页面：
 
-DeepSeek 的额度与 Supadata 分开计算。Bilibili Digest 不收款，也不转售 API 服务。建议为两个账号设置消费上限并定期查看用量。
+| 服务 | 接口地址 | Key 页面 |
+| --- | --- | --- |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | [cloud.siliconflow.cn](https://cloud.siliconflow.cn/account/ak) |
+| OpenAI | `https://api.openai.com/v1` | [platform.openai.com](https://platform.openai.com/api-keys) |
+| Groq | `https://api.groq.com/openai/v1` | [console.groq.com](https://console.groq.com/keys) |
+
+使用前请查看各服务商的最新价格。DeepSeek 的额度与转写额度分开计算，两个账号分别由各自的服务商计费。
 
 ## DeepSeek V4 Flash 价格
 
@@ -178,7 +203,7 @@ Bilibili Digest 使用原生 HTML、CSS 和 JavaScript，没有构建步骤，�
 - 增加生词本，保存单词、原句、解释和视频时间戳。
 - 把笔记和生词导出到 Markdown、CSV、Anki 或其他学习工具。
 - 增加个人主题筛选，只突出与你目标相关的章节。
-- 增加本地模型选项，获得不同的隐私和成本方案。
+- 把语音转写放到本机运行（例如通过 WebGPU 运行 Whisper），让音频不再离开电脑，作为托管兜底的替代方案。
 - 改善键盘操作、字体大小和高对比度等无障碍体验。
 
 请让 Agent 保留用户自带 API Key 的模式，不要把秘密写入源代码，并运行下方检查。分享自己的版本前，也要在真实视频上测试。
@@ -189,12 +214,13 @@ Bilibili Digest 使用原生 HTML、CSS 和 JavaScript，没有构建步骤，�
 
 Bilibili Digest 会直接从扩展向服务商发送请求：
 
-1. 把标准化的 bilibili 视频地址发送给 Supadata，用于获取原生字幕。
-2. 当你使用 AI 功能时，把字幕和相关视频信息发送给 DeepSeek。
-3. 翻译或讲解等功能只发送当前需要的内容，例如选中的文本和上下文，或少量字幕分段。
-4. API Key、设置、笔记和最近缓存保存在 Chrome 本地。
+1. 通过 B 站自己的接口、使用你的 bilibili 登录状态读取字幕。没有任何第三方服务会收到视频或字幕。
+2. 如果你请求了转写，扩展会从 B 站的音频 CDN 下载该分 P 的音轨，再上传给你配置的转写接口。
+3. 当你使用 AI 功能时，把字幕和相关视频信息发送给 DeepSeek。
+4. 翻译或讲解等功能只发送当前需要的内容，例如选中的文本和上下文，或少量字幕分段。
+5. API Key、设置、笔记和最近缓存保存在 Chrome 本地。
 
-Bilibili Digest 没有账号系统、广告、分析统计或行为追踪。Supadata 和 DeepSeek 仍会按照各自的条款和隐私政策处理数据。详情请查看 [PRIVACY.md](PRIVACY.md)。
+Bilibili Digest 没有账号系统、广告、分析统计或行为追踪。你的转写服务商和 DeepSeek 仍会按照各自的条款和隐私政策处理数据。详情请查看 [PRIVACY.md](PRIVACY.md)。
 
 ## 常见问题
 
@@ -215,17 +241,26 @@ Bilibili Digest 没有账号系统、广告、分析统计或行为追踪。Supa
 
 ### Bilibili Digest 提示需要设置
 
-- 打开 **Settings**，保存 Supadata Key 和 DeepSeek Key。
-- 发布版本固定使用 DeepSeek V4 Flash，没有需要填写的 Base URL 或 Model 字段。
+- 打开 **Settings**，保存 DeepSeek Key。这是唯一必需的 Key。
+- 发布版本固定使用 DeepSeek V4 Flash，没有需要填写的 AI Base URL 或 Model 字段。
 - 如果设置提示旧的自定义服务已移除，请重新填写 DeepSeek Key。旧 AI Key 已安全清除，避免被错误用于 DeepSeek。
 
 ### 找不到字幕
 
-- 确认视频是公开的，并且有原生字幕。
-- 检查 Supadata Key、剩余额度、限速和账号状态。
-- 没有字幕的查询和手动重试也可能消耗额度。
+- 确认视频是公开的，并且在当前 Chrome 个人资料中已登录 bilibili.com，因为 B 站的字幕轨需要登录状态才会返回。
+- 有些视频确实没有任何字幕轨。此时面板会显示 **No subtitle found**，并说明具体情况。
+- 如果你已启用语音转写兜底，这个界面还会给出 **转写音频（约 N 分钟）** 按钮，只有点击后才会开始。
+- 如果看不到转写按钮，说明兜底开关未打开、没有填写 Key，或 Chrome 还没有获得该接口地址的访问权限。请打开设置，检查开关与 Key，然后重新保存一次。
 
-Bilibili Digest 不会自动改用 AI 生成字幕。
+Bilibili Digest 不会请求 B 站生成 AI 字幕，唯一的转写路径就是你自己配置的托管服务。
+
+### 转写失败
+
+- **Transcription is not ready**：开关未打开、Key 缺失，或接口权限未授予。请打开设置重新保存。
+- **Transcription needs permission**：Chrome 拒绝了该接口地址。请再次保存设置页，并在弹窗中选择 **允许**。
+- **Audio too long to transcribe**：该分 P 超过了你配置的上限。请在设置中调大（1 到 100 MB），或改选较短的分 P。
+- **Key 被拒绝**：服务商认为凭证无效。请检查 Key 以及该服务商账号的余额。
+- **无法下载该视频音频**：音频 CDN 拒绝了请求。可以在 `chrome://extensions` 重新加载扩展后重试；如果仍然失败，可能是该视频的音频流对当前登录状态或地区不可用。
 
 ### AI 请求失败
 

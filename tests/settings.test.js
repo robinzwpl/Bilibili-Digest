@@ -48,6 +48,51 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
 });
 
+test("speech-to-text defaults stay off and normalize defensively", () => {
+  const defaults = settings.normalize({});
+
+  assert.equal(defaults.asrEnabled, false);
+  assert.equal(defaults.asrProvider, "siliconflow");
+  assert.equal(defaults.asrApiKey, "");
+  assert.equal(defaults.asrBaseUrl, "https://api.siliconflow.cn/v1");
+  assert.equal(defaults.asrMaxBytes, settings.DEFAULT_ASR_MAX_BYTES);
+  assert.equal(settings.asrReady(defaults), false);
+
+  const configured = settings.normalize({
+    asrEnabled: true,
+    asrProvider: "siliconflow",
+    asrApiKey: "  key  ",
+    asrBaseUrl: "  https://api.siliconflow.cn/v1  ",
+    asrModel: "  whisper-large-v3  ",
+    asrMaxBytes: 8 * 1024 * 1024,
+  });
+
+  assert.equal(configured.asrEnabled, true);
+  assert.equal(configured.asrApiKey, "key");
+  assert.equal(configured.asrBaseUrl, "https://api.siliconflow.cn/v1");
+  assert.equal(configured.asrModel, "whisper-large-v3");
+  assert.equal(configured.asrMaxBytes, 8 * 1024 * 1024);
+  assert.equal(settings.asrReady(configured), true);
+
+  // A plaintext endpoint would leak the key, and an unknown provider id must
+  // not silently inherit another provider's base URL.
+  const downgraded = settings.normalize({
+    asrEnabled: true,
+    asrApiKey: "key",
+    asrProvider: "siliconflow",
+    asrBaseUrl: "http://insecure.example.com/v1",
+  });
+  assert.equal(downgraded.asrBaseUrl, "https://api.siliconflow.cn/v1");
+
+  const unknown = settings.normalize({ asrProvider: "mystery" });
+  assert.equal(unknown.asrProvider, "custom");
+  assert.equal(unknown.asrBaseUrl, "");
+
+  const clamped = settings.normalize({ asrMaxBytes: 900 * 1024 * 1024 });
+  assert.equal(clamped.asrMaxBytes, 100 * 1024 * 1024);
+  assert.equal(settings.normalize({ asrMaxBytes: 12 }).asrMaxBytes, 1024 * 1024);
+});
+
 test("bilibili canonical URL is derived from bvid", () => {
   assert.equal(
     platform.canonicalBilibiliUrl("BV1Fg411D7Jy"),

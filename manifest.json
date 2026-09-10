@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Digest",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minimum_chrome_version": "116",
   "description": "Turn Bilibili videos into learning resources with Chinese subtitles, AI overviews, and notes.",
   "permissions": [
@@ -10,7 +10,8 @@
     "tabs",
     "scripting",
     "cookies",
-    "webNavigation"
+    "webNavigation",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://www.bilibili.com/*",
@@ -18,6 +19,9 @@
     "https://*.hdslb.com/*",
     "https://*.bilivideo.com/*",
     "https://api.deepseek.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "action": {
     "default_title": "Open Bilibili Digest",

@@ -136,6 +136,7 @@ function loadBackgroundHelpers({
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("platform.js"), sandbox);
+  vm.runInNewContext(read("asr.js"), sandbox);
   vm.runInNewContext(read("background.js"), sandbox);
   return sandbox.__YTD_TRANSLATION_TESTING__;
 }

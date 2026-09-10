@@ -25,7 +25,7 @@ There is no guaranteed response time or bug-bounty program. Please allow a reaso
 Examples include:
 
 - API keys or private content included in source, logs, screenshots, or release ZIPs;
-- requests to network origins outside the documented bilibili, Supadata, and DeepSeek hosts;
+- requests to network origins outside the documented bilibili and DeepSeek hosts, or outside the transcription endpoint the user configured;
 - script or HTML injection through transcript, metadata, service errors, or model output;
 - access to browsing data outside the documented bilibili scope;
 - unintended transmission of notes, transcripts, or credentials;

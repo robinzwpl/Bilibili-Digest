@@ -58,6 +58,88 @@
         </section>
 
         <section class="card">
+          <h2 data-i18n="asrHeading">Speech to text (optional)</h2>
+          <p class="help" data-i18n="asrIntro">
+            Some bilibili videos have no subtitle track at all. With this on,
+            Bilibili Digest can download the audio and send it to a hosted
+            transcription service you choose. It only ever runs when you click
+            the button, and never at all while this switch is off.
+          </p>
+
+          <label class="toggle-row" for="asrEnabled">
+            <input id="asrEnabled" name="asrEnabled" type="checkbox" />
+            <span data-i18n="asrEnableLabel"
+              >Enable speech-to-text fallback</span
+            >
+          </label>
+
+          <label for="asrProvider" data-i18n="asrProviderLabel"
+            >Transcription service</label
+          >
+          <select id="asrProvider" name="asrProvider" class="asr-field"></select>
+          <p class="help" id="asrProviderHint"></p>
+
+          <label for="asrApiKey" data-i18n="asrApiKeyLabel"
+            >Transcription API key</label
+          >
+          <input
+            id="asrApiKey"
+            name="asrApiKey"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            class="asr-field"
+            placeholder="Paste your key"
+          />
+
+          <label for="asrModel" data-i18n="asrModelLabel">Model</label>
+          <input
+            id="asrModel"
+            name="asrModel"
+            list="asrModelPresets"
+            spellcheck="false"
+            class="asr-field"
+          />
+          <datalist id="asrModelPresets"></datalist>
+
+          <label for="asrBaseUrl" data-i18n="asrBaseUrlLabel"
+            >Endpoint</label
+          >
+          <input
+            id="asrBaseUrl"
+            name="asrBaseUrl"
+            spellcheck="false"
+            class="asr-field"
+          />
+
+          <label for="asrMaxMb" data-i18n="asrMaxMbLabel"
+            >Largest audio to transcribe (MB)</label
+          >
+          <input
+            id="asrMaxMb"
+            name="asrMaxMb"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            class="asr-field"
+          />
+
+          <p class="help" data-i18n="asrTimestampHint">
+            Models that return timings (whisper-1, whisper-large-v3) keep
+            click-to-seek exact. Models that return plain text still work, but
+            their timings are estimated from the audio length.
+          </p>
+
+          <div class="privacy-note" data-i18n="asrPrivacyNote">
+            While this is on, a video's audio leaves your machine and is sent to
+            the service above whenever you click Transcribe audio. Overviews,
+            notes and explanations still go to DeepSeek. Review the provider's
+            terms and pricing first.
+          </div>
+        </section>
+
+        <section class="card">
           <h2 data-i18n="aiProvider">AI provider</h2>
           <div
             class="provider-summary"
@@ -206,6 +288,7 @@
     </main>
 
     <script src="settings.js"></script>
+    <script src="asr.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

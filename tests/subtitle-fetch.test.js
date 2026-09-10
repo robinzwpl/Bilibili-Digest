@@ -147,6 +147,7 @@ function loadBackground({
   vm.runInNewContext(read("settings.js"), sandbox);
   vm.runInNewContext(read("platform.js"), sandbox);
   vm.runInNewContext(read("wbi.js"), sandbox);
+  vm.runInNewContext(read("asr.js"), sandbox);
   vm.runInNewContext(read("background.js"), sandbox);
 
   return { helpers: sandbox.__YTD_TRANSLATION_TESTING__, calls };

@@ -446,6 +446,14 @@ body {
   position: relative;
 }
 
+/* Quiet provenance line: only shown when the text came from speech-to-text. */
+.transcript-source-note {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 /* Transcript search uses one quiet control, so it stays easy to scan. */
 .transcript-search {
   display: flex;
@@ -1035,6 +1043,32 @@ body {
 .error-btn:hover {
   background: var(--accent-hover);
   transform: translateY(-1px);
+}
+
+/* Quiet companion action, e.g. "Try Again" next to "Transcribe audio". */
+.error-btn.secondary {
+  margin-top: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-heavy);
+}
+
+.error-btn.secondary:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.error-btn:disabled,
+.error-btn:disabled:hover {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.error-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ============================================================

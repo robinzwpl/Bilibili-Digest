@@ -16,8 +16,21 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(manifest.options_ui.page, "options.html");
   assert.ok(!manifest.permissions.includes("activeTab"));
   assert.ok(manifest.host_permissions.includes("https://api.deepseek.com/*"));
-  assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "1.3.0");
+  assert.equal(manifest.version, "1.4.0");
+
+  // The user's transcription endpoint is not known at install time, so its
+  // origin is requested on demand instead of being granted up front.
+  assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
+  for (const host of ["siliconflow", "openai", "groq"]) {
+    assert.ok(
+      !manifest.host_permissions.some((pattern) => pattern.includes(host)),
+      `${host} must stay opt-in, not install-time`,
+    );
+  }
+  assert.ok(
+    manifest.permissions.includes("declarativeNetRequestWithHostAccess"),
+    "the audio CDN needs a header rewrite rule for its Referer check",
+  );
 });
 
 test("release copy documents current scope without em dashes", () => {
@@ -43,7 +56,11 @@ test("release copy documents current scope without em dashes", () => {
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
   assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
-  assert.doesNotMatch(optionsPage, /<select\b/i);
+  // Only the speech-to-text provider is a dropdown; the AI provider is fixed.
+  const selectTags = optionsPage.match(/<select\b[^>]*>/gi) || [];
+  for (const tag of selectTags) {
+    assert.match(tag, /id="asr[A-Za-z]*"/);
+  }
   assert.doesNotMatch(optionsPage, /id="(?:provider|aiBaseUrl|aiModel)"/);
   assert.doesNotMatch(optionsPage, /dash\.supadata\.ai/i);
   const detailsTag = optionsPage.match(
@@ -166,6 +183,7 @@ test("runtime has no source-file credential dependency or retired model", () => 
     "sidepanel.js",
     "options.js",
     "settings.js",
+    "asr.js",
   ]
     .map(read)
     .join("\n");
@@ -216,6 +234,66 @@ test("playlist parts are identified from the URL, never from the player", () => 
     sidepanel,
     /chrome\.webNavigation\.onHistoryStateUpdated\.addListener/,
   );
+});
+
+test("speech-to-text is opt-in, manual, and permission scoped", () => {
+  const settings = require("../settings.js");
+  const optionsPage = read("options.html");
+  const optionsScript = read("options.js");
+  const sidepanel = read("sidepanel.js");
+  const background = read("background.js");
+
+  // Off by default, and unusable until both a key and an endpoint exist.
+  assert.equal(settings.DEFAULTS.asrEnabled, false);
+  assert.equal(settings.asrReady(settings.DEFAULTS), false);
+  assert.equal(
+    settings.asrReady({
+      asrEnabled: true,
+      asrApiKey: "",
+      asrBaseUrl: "https://api.siliconflow.cn/v1",
+    }),
+    false,
+  );
+  assert.equal(
+    settings.asrReady({
+      asrEnabled: true,
+      asrApiKey: "k",
+      asrBaseUrl: "https://api.siliconflow.cn/v1",
+    }),
+    true,
+  );
+
+  // The switch lives in Settings, and the third-party origin is requested on
+  // demand rather than granted at install time.
+  assert.match(optionsPage, /id="asrEnabled"[^>]*type="checkbox"/);
+  assert.match(
+    optionsScript,
+    /permissions\.request\(\{ origins: \[pattern\] \}\)/,
+  );
+  assert.match(optionsScript, /asrPermissionDenied/);
+
+  // The panel asks for the fallback only when it is switched on...
+  assert.match(sidepanel, /YTD_SETTINGS\.asrReady\(settings\)/);
+  // ...and starts it only from an explicit click, never on its own.
+  assert.match(sidepanel, /action: \(\) => runTranscription\(videoId\)/);
+  assert.match(sidepanel, /action: "transcribeTranscript"/);
+  // The worker reaches handleTranscribe() from exactly one place: the message
+  // router. Nothing in the navigation or fetch flow can trigger a paid
+  // transcription behind the user's back.
+  assert.equal(
+    (background.match(/handleTranscribe\(/g) || []).length,
+    2,
+    "handleTranscribe must only be defined and dispatched from the router",
+  );
+
+  // Behind that, the worker refuses to run while the switch is off, and
+  // installs the Referer rewrite the audio CDN demands (403 without it).
+  assert.match(background, /if \(!settings\.asrEnabled\)/);
+  assert.match(
+    background,
+    /\{ header: "Referer", operation: "set", value: BILI_REFERER \}/,
+  );
+  assert.match(background, /urlFilter: "\|\|bilivideo\.com"/);
 });
 
 test("retired Remix and reader files are absent", () => {

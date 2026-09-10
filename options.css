@@ -127,13 +127,42 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: #fff;
   color: var(--text);
+}
+
+select {
+  cursor: pointer;
+}
+
+/* The speech-to-text switch is a checkbox in a label, not a stacked field. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 8px;
+}
+
+.toggle-row input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.toggle-row span {
+  font-weight: 700;
+}
+
+/* Fields the fallback switch governs; dimmed while it is off. */
+.asr-field:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 input:focus,

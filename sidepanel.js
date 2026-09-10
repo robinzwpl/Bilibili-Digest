@@ -31,6 +31,11 @@ let videoChangeTimer = null; // Debounces videoChanged events from the content s
 let forceRefreshPending = false; // Set when the content script reports a page change
 let digestRequestToken = 0; // Only the newest startDigest() call may paint the panel
 let errorAction = null;
+let errorSecondaryAction = null;
+// Set when the loaded transcript came from speech-to-text rather than a
+// bilibili subtitle track, so the panel can say so and flag estimated timings.
+let currentTranscriptSource = null;
+let currentTranscriptTimingEstimated = false;
 
 // --- Translation state ---
 // Single-language display: Chinese subtitles show as-is; foreign subtitles are
@@ -450,6 +455,16 @@ function setupEventListeners() {
     }
   });
 
+  document.getElementById("errorSecondaryBtn").addEventListener("click", () => {
+    if (errorSecondaryAction) {
+      errorSecondaryAction();
+      return;
+    }
+    if (currentVideoId) {
+      startDigest(currentVideoId, currentVideoUrl);
+    }
+  });
+
   document.getElementById("settingsBtn")?.addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "openOptions" });
   });
@@ -645,6 +660,9 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptTimestamped = cached.transcriptTimestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
     currentNeedsTranslation = cached.needsTranslation === true;
+    currentTranscriptSource = cached.transcriptSource === "asr" ? "asr" : "subtitle";
+    currentTranscriptTimingEstimated =
+      cached.transcriptTimingEstimated === true;
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -695,6 +713,8 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptText = null;
   currentTranscriptTimestamped = null;
   currentTranscriptLanguage = null;
+  currentTranscriptSource = null;
+  currentTranscriptTimingEstimated = false;
   isAnalysisLoading = false;
 
   if (currentVideoTitle || currentChannelName) {
@@ -716,18 +736,32 @@ async function startDigest(videoId, videoUrl) {
   if (!isCurrentRequest()) return; // A newer part won the race; drop this one.
 
   if (!transcriptResult.success) {
-    showError(
-      "No subtitle found",
-      transcriptResult.message || transcriptResult.error,
-    );
+    await offerTranscriptionFallback(transcriptResult, videoId);
     return;
   }
 
-  currentTranscript = transcriptResult.transcript;
-  currentTranscriptText = transcriptResult.transcriptText;
-  currentTranscriptTimestamped = transcriptResult.transcriptTextTimestamped;
-  currentTranscriptLanguage = transcriptResult.language || null;
-  currentNeedsTranslation = transcriptResult.needsTranslation === true;
+  await applyTranscriptResult(transcriptResult, videoId);
+
+  // DON'T run LLM analysis automatically - wait for user to click Overview tab
+  // This saves tokens when user just wants to see the transcript
+}
+
+/**
+ * Render a transcript into the panel.
+ *
+ * Both sources — a bilibili subtitle track and hosted speech-to-text — arrive
+ * in the same contract, so this is the single place that turns a transcript
+ * into UI. That is what makes every downstream feature (overview, notes,
+ * search, click-to-seek, selection explain) work for transcribed videos too.
+ */
+async function applyTranscriptResult(result, videoId) {
+  currentTranscript = result.transcript;
+  currentTranscriptText = result.transcriptText;
+  currentTranscriptTimestamped = result.transcriptTextTimestamped;
+  currentTranscriptLanguage = result.language || null;
+  currentNeedsTranslation = result.needsTranslation === true;
+  currentTranscriptSource = result.source === "asr" ? "asr" : "subtitle";
+  currentTranscriptTimingEstimated = result.timingEstimated === true;
 
   // Single-language display: Chinese tracks render directly; foreign tracks
   // auto-translate to Simplified Chinese (the "zh" mode reuses the existing
@@ -749,9 +783,151 @@ async function startDigest(videoId, videoUrl) {
 
   // Save transcript to cache (without analysis)
   await saveToCache(videoId);
+}
 
-  // DON'T run LLM analysis automatically - wait for user to click Overview tab
-  // This saves tokens when user just wants to see the transcript
+/** Read the transcription settings without going through the provider. */
+async function loadStoredSettings() {
+  try {
+    const stored = await chrome.storage.local.get(YTD_SETTINGS.STORAGE_KEY);
+    return YTD_SETTINGS.normalize(stored[YTD_SETTINGS.STORAGE_KEY]);
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * A video with no subtitle track used to be a dead end. When the user has
+ * switched hosted speech-to-text on, offer it here — as an explicit,
+ * per-video action. It downloads the audio and spends money at their
+ * transcription provider, so it must never start by itself.
+ *
+ * The pre-flight (probeAudio) both labels the button with the real audio
+ * length and catches the two cases where offering the button would be a lie:
+ * audio over the configured size ceiling, and a missing host permission for
+ * the endpoint.
+ */
+async function offerTranscriptionFallback(transcriptResult, videoId) {
+  const retry = () => startDigest(videoId, currentVideoUrl);
+  const openSettings = () =>
+    chrome.runtime.sendMessage({ action: "openOptions" });
+  const reason = transcriptResult.message || transcriptResult.error;
+
+  const settings = await loadStoredSettings();
+  if (!settings || !YTD_SETTINGS.asrReady(settings)) {
+    showError("No subtitle found", reason);
+    return;
+  }
+
+  const probe = await chrome.runtime.sendMessage({
+    action: "probeAudio",
+    videoId: videoId,
+  });
+
+  if (!probe || !probe.success) {
+    // We could not size the job, but the user may still want to try.
+    showErrorState(
+      "No subtitle found",
+      reason,
+      { label: "Transcribe audio", action: () => runTranscription(videoId) },
+      { label: "Try Again", action: retry },
+    );
+    return;
+  }
+
+  const minutes = Number(probe.minutes) || 0;
+
+  if (probe.permissionMissing) {
+    showErrorState(
+      "Transcription needs permission",
+      `Bilibili Digest is not allowed to call ${
+        probe.endpointHost || "your transcription service"
+      } yet. Open the settings page and save once to grant access.`,
+      { label: "Open Settings", action: openSettings },
+      { label: "Try Again", action: retry },
+    );
+    return;
+  }
+
+  if (probe.tooLarge) {
+    // Refuse before downloading tens of megabytes only to fail at upload.
+    showErrorState(
+      "Audio too long to transcribe",
+      `This part is about ${minutes} min (${BILI_ASR.formatBytes(
+        probe.estimatedBytes,
+      )}), over the ${BILI_ASR.formatBytes(
+        probe.maxBytes,
+      )} ceiling set for your transcription service. Raise the ceiling in settings or pick a shorter part.`,
+      { label: "Open Settings", action: openSettings },
+      { label: "Try Again", action: retry },
+    );
+    return;
+  }
+
+  showErrorState(
+    "No subtitle found",
+    `${reason} You can transcribe the audio instead.`,
+    {
+      label: minutes
+        ? `Transcribe audio (about ${minutes} min)`
+        : "Transcribe audio",
+      action: () => runTranscription(videoId),
+    },
+    { label: "Try Again", action: retry },
+  );
+}
+
+/** Run the paid speech-to-text pass the user just asked for. */
+async function runTranscription(videoId) {
+  // Claim the request token so a playlist switch (or a second click) always
+  // wins over this longer-running job.
+  const token = ++digestRequestToken;
+  const isCurrentRequest = () => token === digestRequestToken;
+
+  showState("loading");
+  updateLoading("Downloading audio", "");
+
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "transcribeTranscript",
+      videoId: videoId,
+    });
+  } catch (error) {
+    result = { success: false, error: error && error.message };
+  }
+
+  if (!isCurrentRequest()) return;
+
+  if (!result || !result.success) {
+    const message =
+      (result && result.message) ||
+      (result && result.error) ||
+      "Transcription failed.";
+    const retry = () => startDigest(videoId, currentVideoUrl);
+
+    if (result && result.error === "asr_not_configured") {
+      showErrorState(
+        "Transcription is not ready",
+        message,
+        {
+          label: "Open Settings",
+          action: () => chrome.runtime.sendMessage({ action: "openOptions" }),
+        },
+        { label: "Try Again", action: retry },
+      );
+      return;
+    }
+
+    showErrorState(
+      "Transcription failed",
+      message,
+      { label: "Try Again", action: retry },
+      null,
+    );
+    return;
+  }
+
+  await applyTranscriptResult(result, videoId);
 }
 
 // ============================================================
@@ -1105,6 +1281,27 @@ function seekFromTranscriptEntryClick(event, seconds) {
   seekTo(seconds);
 }
 
+/**
+ * Disclose machine transcription once per video. When the provider returns no
+ * timings we spread the sentences across the known audio length, so
+ * click-to-seek lands only approximately and the user deserves to know.
+ */
+function updateTranscriptSourceNote() {
+  const note = document.getElementById("transcriptSourceNote");
+  if (!note) return;
+
+  if (currentTranscriptSource !== "asr") {
+    note.style.display = "none";
+    note.textContent = "";
+    return;
+  }
+
+  note.textContent = currentTranscriptTimingEstimated
+    ? "Transcribed from the audio by your speech-to-text service. Timings are estimates."
+    : "Transcribed from the audio by your speech-to-text service.";
+  note.style.display = "";
+}
+
 function renderTranscript() {
   if (!currentTranscript) return;
 
@@ -1113,6 +1310,8 @@ function renderTranscript() {
 
   const existingBadge = document.getElementById("transcriptSourceBadge");
   if (existingBadge) existingBadge.remove();
+
+  updateTranscriptSourceNote();
 
   // Group entries using smart sentence-boundary + time-guardrail logic
   const grouped = groupTranscriptEntries(currentTranscript);
@@ -1458,23 +1657,50 @@ function updateLoading(title, subtitle) {
 }
 
 function showError(title, message) {
-  errorAction = null;
+  showErrorState(title, message, { label: "Try Again" }, null);
+}
+
+/**
+ * Error state with up to two actions. `primary` is { label, action, disabled }
+ * and drives the terracotta button; `secondary` is a quieter companion action
+ * or null. Both are reset on every entry so a previous video's handlers can
+ * never leak into the next error screen.
+ */
+function showErrorState(title, message, primary, secondary) {
   showState("error");
   document.getElementById("errorTitle").textContent = title;
   document.getElementById("errorMessage").textContent = message;
-  document.getElementById("errorBtn").textContent = "Try Again";
+
+  const primaryBtn = document.getElementById("errorBtn");
+  primaryBtn.textContent = (primary && primary.label) || "Try Again";
+  primaryBtn.disabled = !!(primary && primary.disabled);
+  errorAction = (primary && primary.action) || null;
+
+  const secondaryBtn = document.getElementById("errorSecondaryBtn");
+  if (secondary) {
+    secondaryBtn.style.display = "";
+    secondaryBtn.textContent = secondary.label;
+    errorSecondaryAction = secondary.action;
+  } else {
+    secondaryBtn.style.display = "none";
+    secondaryBtn.textContent = "Try Again";
+    errorSecondaryAction = null;
+  }
 }
 
 function showConfigError(configStatus) {
   const missingKeys = [];
   if (!configStatus.hasAiKey) missingKeys.push("AI provider");
 
-  showState("error");
-  document.getElementById("errorTitle").textContent = "API Keys Missing";
-  document.getElementById("errorMessage").textContent =
-    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in Bilibili Digest Settings.`;
-  document.getElementById("errorBtn").textContent = "Open Settings";
-  errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
+  showErrorState(
+    "API Keys Missing",
+    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in Bilibili Digest Settings.`,
+    {
+      label: "Open Settings",
+      action: () => chrome.runtime.sendMessage({ action: "openOptions" }),
+    },
+    null,
+  );
 }
 
 // ============================================================
@@ -2030,6 +2256,8 @@ async function saveToCache(videoId) {
       transcriptTimestamped: currentTranscriptTimestamped,
       transcriptLanguage: currentTranscriptLanguage,
       needsTranslation: currentNeedsTranslation,
+      transcriptSource: currentTranscriptSource,
+      transcriptTimingEstimated: currentTranscriptTimingEstimated,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,

@@ -101,6 +101,13 @@
             Something went wrong.
           </div>
           <button class="error-btn" id="errorBtn">Try Again</button>
+          <button
+            class="error-btn secondary"
+            id="errorSecondaryBtn"
+            style="display: none"
+          >
+            Try Again
+          </button>
         </div>
       </div>
 
@@ -118,6 +125,11 @@
                 </button>
               </div>
             </div>
+            <div
+              class="transcript-source-note"
+              id="transcriptSourceNote"
+              style="display: none"
+            ></div>
             <!-- Search stays inside the Transcript tab and never changes playback. -->
             <div class="transcript-search" role="search">
               <svg
@@ -264,6 +276,7 @@
 
     <script src="settings.js"></script>
     <script src="platform.js"></script>
+    <script src="asr.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

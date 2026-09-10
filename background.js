@@ -358,6 +358,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep the message channel open for async response
   }
 
+  if (message.action === "probeAudio") {
+    // Size/duration pre-flight for the speech-to-text button. Never
+    // downloads and never calls a paid service.
+    handleProbeAudio(message.videoId)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "transcribeTranscript") {
+    // The user explicitly asked for speech-to-text on a video with no
+    // subtitle track. This is the only path that spends money.
+    handleTranscribe(message.videoId)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === "analyzeTranscript") {
     // Pass video duration to help the AI validate timestamps
     handleAnalyzeTranscript(
@@ -683,6 +701,7 @@ async function fetchBilibiliView(bvid, page) {
       page: Number(entry.page) || 0,
       cid: Number(entry.cid) || 0,
       part: entry.part || "",
+      duration: Number(entry.duration) || 0,
     };
   });
 
@@ -698,6 +717,9 @@ async function fetchBilibiliView(bvid, page) {
     cid: cid,
     page: p,
     pages: pages,
+    // Per-part run time, used to size the speech-to-text job before we pay for
+    // it. `d.duration` is the whole-video total, so prefer the part's own value.
+    duration: (match && match.duration) || Number(d.duration) || 0,
     title: d.title || "",
     ownerName: d.owner ? d.owner.name : "",
   };
@@ -769,39 +791,28 @@ async function fetchBilibiliSubtitleJson(subtitleUrl) {
   return res.json();
 }
 
-/** Normalize bilibili subtitle body[] into the shared transcript format. */
+/**
+ * Normalize bilibili subtitle body[] into the shared transcript format.
+ *
+ * The shaping itself lives in asr.js (cuesToTranscript) so that speech-to-text
+ * results — which arrive as cues too — produce a byte-identical structure and
+ * inherit every downstream feature for free.
+ */
 function normalizeBilibiliSubtitle(json, language, needsTranslation) {
   const body = Array.isArray(json && json.body) ? json.body : [];
-  const transcript = [];
-  let plain = "";
-  let timestamped = "";
+  const cues = [];
 
   for (const item of body) {
     const text = String(item.content || "").trim();
     if (!text) continue;
-    const start = Math.max(0, Math.floor(Number(item.from) || 0));
-    const end = Math.max(start, Math.floor(Number(item.to) || start));
-    const duration = end - start;
-    const minutes = Math.floor(start / 60);
-    const seconds = start % 60;
-    const ts = minutes + ":" + String(seconds).padStart(2, "0");
-
-    transcript.push({
+    cues.push({
       text: text,
-      start: start,
-      duration: duration,
-      language: language,
-      needsTranslation: !!needsTranslation,
+      start: Number(item.from) || 0,
+      end: Number(item.to) || 0,
     });
-    plain += text + " ";
-    timestamped += "[" + ts + "] " + text + "\n";
   }
 
-  return {
-    transcript: transcript,
-    transcriptText: plain.trim(),
-    transcriptTextTimestamped: timestamped.trim(),
-  };
+  return BILI_ASR.cuesToTranscript(cues, language, needsTranslation);
 }
 
 /**
@@ -932,6 +943,537 @@ async function handleFetchTranscript(pageId, tabId) {
   }
 }
 
+
+// ============================================================
+// HOSTED SPEECH-TO-TEXT FALLBACK
+// ============================================================
+//
+// Only for videos bilibili has no subtitle for. The extension downloads the
+// DASH audio track itself and uploads it to an OpenAI-compatible
+// /audio/transcriptions endpoint that the user configured (see asr.js).
+//
+// Two hard-won facts drive this code:
+//   1. The audio CDN (bilivideo.com) answers 403 unless the request carries a
+//      bilibili Referer. An extension-origin fetch has no Referer and Chrome's
+//      fetch() refuses to set that header, so a declarativeNetRequest rule
+//      supplies it instead.
+//   2. Bilibili serves its DASH audio as a single complete MP4 (ftyp/moov/...),
+//      not as byte-chunked segments, so one GET yields a file we can upload
+//      as-is. Speech recognition does not need bandwidth, so we always pick the
+//      smallest stream.
+
+const BILI_MEDIA_RULE_ID = 9001;
+const BILI_MEDIA_ANY_RULE_ID = 9002;
+const BILI_REFERER = "https://www.bilibili.com/";
+
+// One vocabulary for this whole section: the shared BILI_ASR.ERROR_CODES
+// values. Internal helpers and the side panel must agree on the same strings,
+// otherwise a failure gets reported but is never recognised.
+const ASR_ERRORS = BILI_ASR.ERROR_CODES;
+
+let mediaRefererRuleInstalled = false;
+
+/**
+ * Install (once) the request-header rules that make the audio CDN happy.
+ *
+ * Rule 9001 is scoped to requests this extension initiates, which is the
+ * precise thing we need. Rule 9002 is the same rewrite without the initiator
+ * filter: it exists because Chrome has historically been inconsistent about
+ * matching extension-initiated requests, and the value it writes is byte for
+ * byte the Referer the bilibili player already sends for its own media
+ * requests, so widening it changes nothing for the page.
+ */
+async function installMediaRefererRule() {
+  if (mediaRefererRuleInstalled) return;
+  const dnr = chrome.declarativeNetRequest;
+  if (!dnr || typeof dnr.updateDynamicRules !== "function") return;
+
+  const requestHeaders = [
+    { header: "Referer", operation: "set", value: BILI_REFERER },
+  ];
+
+  try {
+    await dnr.updateDynamicRules({
+      removeRuleIds: [BILI_MEDIA_RULE_ID, BILI_MEDIA_ANY_RULE_ID],
+      addRules: [
+        {
+          id: BILI_MEDIA_RULE_ID,
+          priority: 2,
+          action: { type: "modifyHeaders", requestHeaders: requestHeaders },
+          condition: {
+            initiatorDomains: [chrome.runtime.id],
+            urlFilter: "||bilivideo.com",
+            resourceTypes: ["xmlhttprequest", "other"],
+          },
+        },
+        {
+          id: BILI_MEDIA_ANY_RULE_ID,
+          priority: 1,
+          action: { type: "modifyHeaders", requestHeaders: requestHeaders },
+          condition: {
+            urlFilter: "||bilivideo.com",
+            resourceTypes: ["xmlhttprequest", "other"],
+          },
+        },
+      ],
+    });
+    mediaRefererRuleInstalled = true;
+  } catch (error) {
+    debugLog(
+      "[Bilibili Digest BG] media referer rule failed:",
+      error && error.message,
+    );
+  }
+}
+
+/** Push a status line into the side panel's loading state (best effort). */
+function sendTranscribeProgress(title, subtitle) {
+  try {
+    const pending = chrome.runtime.sendMessage({
+      action: "transcriptProgress",
+      title: title,
+      subtitle: subtitle || "",
+    });
+    if (pending && typeof pending.catch === "function") pending.catch(() => {});
+  } catch (_) {}
+}
+
+/**
+ * Resolve the DASH audio streams for a video part.
+ * Returns { urls, bandwidth, duration } or { error }.
+ */
+async function fetchBilibiliPlayUrl(aid, cid) {
+  const cookie = await getBilibiliCookieHeader();
+  const signed = await BILI_WBI.signParams({
+    avid: aid,
+    cid: cid,
+    qn: 64,
+    fnver: 0,
+    fnval: 16,
+    fourk: 1,
+  });
+  const url =
+    "https://api.bilibili.com/x/player/wbi/playurl?avid=" + aid +
+    "&cid=" + cid +
+    "&qn=64&fnver=0&fnval=16&fourk=1" +
+    "&w_rid=" + signed.w_rid + "&wts=" + signed.wts;
+
+  const headers = { "User-Agent": BILI_UA, Referer: BILI_REFERER };
+  if (cookie) headers.Cookie = cookie;
+
+  const res = await fetch(url, { headers: headers });
+  if (res.status === 412) return { error: ASR_ERRORS.RATE_LIMITED };
+
+  const json = await res.json().catch(function () { return {}; });
+  if (json.code === -412) return { error: ASR_ERRORS.RATE_LIMITED };
+  if (json.code !== 0 || !json.data) {
+    return {
+      error: ASR_ERRORS.AUDIO_UNAVAILABLE,
+      message: json.message || "Could not load this video's audio stream.",
+    };
+  }
+
+  const dash = json.data.dash;
+  const tracks = dash && Array.isArray(dash.audio) ? dash.audio : [];
+  if (!tracks.length) {
+    return {
+      error: ASR_ERRORS.AUDIO_UNAVAILABLE,
+      message: "This video has no separate audio stream to transcribe.",
+    };
+  }
+
+  // Smallest bandwidth first: a 64 kbps mono track is plenty for ASR and keeps
+  // the upload (which the user pays for) small.
+  const sorted = tracks.slice().sort(function (a, b) {
+    return (Number(a.bandwidth) || 0) - (Number(b.bandwidth) || 0);
+  });
+  const track = sorted[0];
+  const urls = [track.baseUrl || track.base_url]
+    .concat(track.backupUrl || track.backup_url || [])
+    .filter(Boolean);
+
+  if (!urls.length) {
+    return {
+      error: ASR_ERRORS.AUDIO_UNAVAILABLE,
+      message: "Audio stream URL missing.",
+    };
+  }
+
+  return {
+    urls: urls,
+    bandwidth: Number(track.bandwidth) || 0,
+    duration: Number(dash.duration) || Number(json.data.timelength) / 1000 || 0,
+    mimeType: track.mimeType || "audio/mp4",
+  };
+}
+
+/**
+ * Download the audio file, trying each mirror in turn.
+ * Returns { buffer } or { error, bytes }.
+ */
+async function downloadBilibiliAudio(urls, maxBytes) {
+  await installMediaRefererRule();
+  let lastStatus = 0;
+
+  for (const url of urls) {
+    let res;
+    try {
+      // No cookies: the CDN is public, and omitting credentials keeps this a
+      // simple (preflight-free) request.
+      res = await fetch(url, { credentials: "omit", cache: "no-store" });
+    } catch (error) {
+      debugLog("[Bilibili Digest BG] audio fetch failed:", error && error.message);
+      continue;
+    }
+
+    if (!res.ok) {
+      lastStatus = res.status;
+      continue;
+    }
+
+    const declared = Number(res.headers.get("content-length")) || 0;
+    if (maxBytes && declared && declared > maxBytes) {
+      return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: declared };
+    }
+
+    const buffer = await res.arrayBuffer();
+    if (!buffer.byteLength) {
+      lastStatus = 0;
+      continue;
+    }
+    if (maxBytes && buffer.byteLength > maxBytes) {
+      return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: buffer.byteLength };
+    }
+    return { buffer: buffer };
+  }
+
+  return { error: ASR_ERRORS.AUDIO_UNAVAILABLE, status: lastStatus };
+}
+
+/**
+ * POST one multipart transcription request.
+ * Returns { body } (parsed JSON or raw text) or { error, status, detail }.
+ */
+async function postTranscriptionRequest(options) {
+  const endpoint = BILI_ASR.transcriptionsUrl(options.baseUrl);
+  if (!endpoint) {
+    return {
+      error: ASR_ERRORS.ASR_NOT_CONFIGURED,
+      message: "Transcription endpoint is not set.",
+    };
+  }
+
+  const form = new FormData();
+  // Providers sniff the container, and our bytes are a plain MP4 file; ".mp4"
+  // is on every Whisper-compatible allowlist.
+  form.append(
+    "file",
+    new Blob([options.buffer], { type: options.mimeType || "audio/mp4" }),
+    "audio.mp4",
+  );
+  form.append("model", options.model);
+  form.append("response_format", options.format);
+
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + options.apiKey },
+      body: form,
+    });
+  } catch (error) {
+    return { error: ASR_ERRORS.ASR_NETWORK, message: error && error.message };
+  }
+
+  if (res.status === 401 || res.status === 403) return { error: ASR_ERRORS.ASR_AUTH };
+  if (res.status === 429) return { error: ASR_ERRORS.ASR_RATE_LIMITED };
+  if (res.status === 413) return { error: ASR_ERRORS.AUDIO_TOO_LARGE };
+
+  const raw = await res.text().catch(function () { return ""; });
+  if (!res.ok) {
+    return {
+      error: ASR_ERRORS.ASR_REJECTED,
+      status: res.status,
+      detail: String(raw || "").slice(0, 300),
+    };
+  }
+
+  if (options.format === "srt") return { body: raw };
+
+  try {
+    return { body: JSON.parse(raw) };
+  } catch (_) {
+    return { body: { text: raw } };
+  }
+}
+
+/**
+ * Transcribe a downloaded buffer, degrading gracefully when the endpoint
+ * refuses a richer response format. Returns the transcript contract or
+ * { error }.
+ */
+async function transcribeAudioBuffer(buffer, settings, durationSeconds) {
+  const plan = BILI_ASR.responseFormatPlan(
+    BILI_ASR.modelSupportsTimestamps(settings.asrProvider, settings.asrModel),
+  );
+
+  let lastError = null;
+
+  for (const format of plan) {
+    const attempt = await postTranscriptionRequest({
+      baseUrl: settings.asrBaseUrl,
+      apiKey: settings.asrApiKey,
+      model: settings.asrModel,
+      mimeType: "audio/mp4",
+      format: format,
+      buffer: buffer,
+    });
+
+    if (attempt.error) {
+      // Credentials, quota and size problems are terminal. A rejected format
+      // is not: fall through and try the next one.
+      if (
+        attempt.error === ASR_ERRORS.ASR_AUTH ||
+        attempt.error === ASR_ERRORS.ASR_RATE_LIMITED ||
+        attempt.error === ASR_ERRORS.AUDIO_TOO_LARGE
+      ) {
+        return attempt;
+      }
+      lastError = attempt;
+      continue;
+    }
+
+    const parsed = BILI_ASR.parseTranscriptionResponse(
+      attempt.body,
+      format,
+      durationSeconds,
+    );
+    if (!parsed || !parsed.cues || !parsed.cues.length) {
+      lastError = { error: ASR_ERRORS.ASR_REJECTED, detail: "empty result" };
+      continue;
+    }
+
+    const shaped = BILI_ASR.cuesToTranscript(parsed.cues, "asr", false);
+    if (!shaped.transcript.length) {
+      lastError = { error: ASR_ERRORS.ASR_REJECTED, detail: "empty result" };
+      continue;
+    }
+
+    return {
+      transcript: shaped.transcript,
+      transcriptText: shaped.transcriptText,
+      transcriptTextTimestamped: shaped.transcriptTextTimestamped,
+      estimated: parsed.estimated === true,
+    };
+  }
+
+  return lastError || { error: ASR_ERRORS.ASR_REJECTED };
+}
+
+/** Match pattern for the user's transcription endpoint, or "" if unusable. */
+function endpointOriginPattern(baseUrl) {
+  const endpoint = BILI_ASR.transcriptionsUrl(baseUrl);
+  if (!endpoint) return "";
+  try {
+    return new URL(endpoint).origin + "/*";
+  } catch (_) {
+    return "";
+  }
+}
+
+/**
+ * The transcription endpoint is a third-party origin that is not part of the
+ * install-time host permissions; the options page asks for it on demand. A
+ * service worker can only reach it once that grant exists.
+ */
+async function hasEndpointPermission(baseUrl) {
+  const pattern = BILI_ASR.endpointOriginPattern(baseUrl);
+  if (!pattern) return false;
+  try {
+    if (!chrome.permissions || !chrome.permissions.contains) return false;
+    return (await chrome.permissions.contains({ origins: [pattern] })) === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Cheap pre-flight so the panel can label the button and warn on size. */
+async function handleProbeAudio(pageId) {
+  const settings = await getSettings();
+  if (!YTD_SETTINGS.asrReady(settings)) {
+    return { success: false, error: "ASR_NOT_CONFIGURED", permissionMissing: false };
+  }
+
+  // Surfaced so the panel can point at Settings instead of offering a button
+  // that is guaranteed to fail.
+  const permissionMissing = !(await hasEndpointPermission(settings.asrBaseUrl));
+
+  const split = BILI_PLATFORM.splitPageId(pageId);
+  if (!split.bvid) return { success: false, error: "INVALID_ID" };
+
+  const view = await fetchBilibiliView(split.bvid, split.page);
+  if (view.error) {
+    return { success: false, error: view.error, message: view.message };
+  }
+
+  const play = await fetchBilibiliPlayUrl(view.aid, view.cid);
+  if (play.error) {
+    return { success: false, error: play.error, message: play.message };
+  }
+
+  const duration = view.duration || play.duration || 0;
+  const estimatedBytes = BILI_ASR.estimateAudioBytes(play.bandwidth, duration);
+
+  return {
+    success: true,
+    duration: duration,
+    minutes: BILI_ASR.audioMinutes(duration),
+    estimatedBytes: estimatedBytes,
+    maxBytes: settings.asrMaxBytes,
+    tooLarge: estimatedBytes > settings.asrMaxBytes,
+    permissionMissing: permissionMissing,
+    endpointHost: BILI_ASR.endpointHost(settings.asrBaseUrl),
+  };
+}
+
+/**
+ * Full fallback for a video part with no subtitle track: resolve the audio,
+ * download it, transcribe it, and return the standard transcript contract plus
+ * `source: "asr"`.
+ */
+async function handleTranscribe(pageId) {
+  const settings = await getSettings();
+
+  if (!settings.asrEnabled) {
+    return {
+      success: false,
+      error: BILI_ASR.ERROR_CODES.ASR_DISABLED,
+      message: "Speech-to-text is turned off in Bilibili Digest Settings.",
+    };
+  }
+  if (!YTD_SETTINGS.asrReady(settings)) {
+    return {
+      success: false,
+      error: BILI_ASR.ERROR_CODES.ASR_NOT_CONFIGURED,
+      message: "Add a speech-to-text API key in Bilibili Digest Settings.",
+    };
+  }
+  if (!(await hasEndpointPermission(settings.asrBaseUrl))) {
+    return {
+      success: false,
+      error: BILI_ASR.ERROR_CODES.ASR_NOT_CONFIGURED,
+      message:
+        "Bilibili Digest is not allowed to call " +
+        (BILI_ASR.endpointHost(settings.asrBaseUrl) || "your transcription service") +
+        ". Open Bilibili Digest Settings and save again to grant access.",
+    };
+  }
+
+  const split = BILI_PLATFORM.splitPageId(pageId);
+  if (!split.bvid) {
+    return { success: false, error: "INVALID_ID", message: "Invalid bilibili video ID." };
+  }
+
+  try {
+    const view = await fetchBilibiliView(split.bvid, split.page);
+    if (view.error) {
+      return { success: false, error: view.error, message: view.message };
+    }
+
+    const play = await fetchBilibiliPlayUrl(view.aid, view.cid);
+    if (play.error) {
+      return { success: false, error: play.error, message: play.message };
+    }
+
+    const duration = view.duration || play.duration || 0;
+
+    sendTranscribeProgress("Downloading audio", "");
+    const download = await downloadBilibiliAudio(play.urls, settings.asrMaxBytes);
+    if (download.error) {
+      if (download.error === ASR_ERRORS.AUDIO_TOO_LARGE) {
+        return {
+          success: false,
+          error: BILI_ASR.ERROR_CODES.AUDIO_TOO_LARGE,
+          bytes: download.bytes,
+          maxBytes: settings.asrMaxBytes,
+          message:
+            "This audio track is " + BILI_ASR.formatBytes(download.bytes) +
+            ", over the " + BILI_ASR.formatBytes(settings.asrMaxBytes) +
+            " limit set for the transcription service.",
+        };
+      }
+      return {
+        success: false,
+        error: BILI_ASR.ERROR_CODES.AUDIO_UNAVAILABLE,
+        message:
+          "Could not download this video's audio" +
+          (download.status ? " (HTTP " + download.status + ")" : "") + ".",
+      };
+    }
+
+    const minutes = BILI_ASR.audioMinutes(duration);
+    sendTranscribeProgress(
+      "Transcribing audio",
+      minutes ? "About " + minutes + " min of audio" : "",
+    );
+
+    const result = await transcribeAudioBuffer(download.buffer, settings, duration);
+    if (result.error) {
+      return {
+        success: false,
+        error: result.error,
+        status: result.status,
+        detail: result.detail,
+        message: asrFailureMessage(result, settings),
+      };
+    }
+
+    return {
+      success: true,
+      transcript: result.transcript,
+      transcriptText: result.transcriptText,
+      transcriptTextTimestamped: result.transcriptTextTimestamped,
+      language: "asr",
+      needsTranslation: false,
+      isAiSubtitle: false,
+      source: "asr",
+      timingEstimated: result.estimated === true,
+      cid: view.cid,
+      aid: view.aid,
+      page: split.page,
+    };
+  } catch (error) {
+    console.error("Transcription error:", error);
+    return {
+      success: false,
+      error: error.message || "Transcription failed",
+    };
+  }
+}
+
+/** Turn an internal failure code into something a person can act on. */
+function asrFailureMessage(result, settings) {
+  const provider = BILI_ASR.resolveProvider(settings.asrProvider).label;
+  switch (result.error) {
+    case BILI_ASR.ERROR_CODES.ASR_AUTH:
+      return (
+        provider +
+        " rejected the API key. Check the speech-to-text key in Bilibili Digest Settings."
+      );
+    case BILI_ASR.ERROR_CODES.ASR_RATE_LIMITED:
+      return provider + " is rate limiting this key. Try again in a moment.";
+    case BILI_ASR.ERROR_CODES.AUDIO_TOO_LARGE:
+      return "The audio track is larger than the configured limit.";
+    case BILI_ASR.ERROR_CODES.ASR_NETWORK:
+      return "Could not reach " + provider + ". Check your network connection.";
+    default:
+      return (
+        provider +
+        " could not transcribe this audio" +
+        (result.status ? " (HTTP " + result.status + ")" : "") + "."
+      );
+  }
+}
 
 // ============================================================
 // JSON HELPER
@@ -1809,4 +2351,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   fetchBilibiliView,
   pickSubtitleTrack,
   normalizeBilibiliSubtitle,
+  fetchBilibiliPlayUrl,
+  downloadBilibiliAudio,
+  installMediaRefererRule,
+  postTranscriptionRequest,
+  transcribeAudioBuffer,
+  handleProbeAudio,
+  handleTranscribe,
 };

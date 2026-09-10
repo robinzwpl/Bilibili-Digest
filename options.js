@@ -16,6 +16,29 @@ const YTD_OPTIONS = (() => {
       supadataLink: "Open bilibili.com",
       supadataHelpSuffix:
         ". Supadata generates the key during onboarding.",
+      asrHeading: "Speech to text (optional)",
+      asrIntro:
+        "Some bilibili videos have no subtitle track at all. With this on, Bilibili Digest can download the audio and send it to a hosted transcription service you choose. It only ever runs when you click the button, and never at all while this switch is off.",
+      asrEnableLabel: "Enable speech-to-text fallback",
+      asrProviderLabel: "Transcription service",
+      asrHintSiliconflow:
+        "OpenAI-compatible endpoint at api.siliconflow.cn, reachable from mainland China.",
+      asrHintOpenai:
+        "Whisper endpoints at api.openai.com. Needs network access outside mainland China.",
+      asrHintGroq:
+        "Fast Whisper endpoints at api.groq.com. Needs network access outside mainland China.",
+      asrHintCustom: "Any OpenAI-compatible /audio/transcriptions endpoint.",
+      asrApiKeyLabel: "Transcription API key",
+      asrModelLabel: "Model",
+      asrBaseUrlLabel: "Endpoint",
+      asrMaxMbLabel: "Largest audio to transcribe (MB)",
+      asrTimestampHint:
+        "Models that return timings (whisper-1, whisper-large-v3) keep click-to-seek exact. Models that return plain text still work, but their timings are estimated from the audio length.",
+      asrPrivacyNote:
+        "While this is on, clicking Transcribe audio sends that video's audio to the service above. Overviews, notes and explanations still go to DeepSeek. Review the provider's terms and pricing first.",
+      asrAddKey: "Add a transcription API key, or turn the fallback off.",
+      asrPermissionDenied:
+        "Chrome blocked access to that endpoint, so transcription cannot run yet. Save again and choose Allow in the prompt.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
@@ -85,6 +108,26 @@ const YTD_OPTIONS = (() => {
       supadataHelp: "字幕来自哔哩哔哩自带的 CC 字幕和 AI 字幕，无需 API 密钥。",
       supadataLink: "打开 bilibili.com",
       supadataHelpSuffix: "请在当前 Chrome 个人资料中登录 bilibili.com，以解锁字幕轨。",
+      asrHeading: "语音转写（可选）",
+      asrIntro:
+        "部分 B 站视频完全没有字幕。打开此开关后，Bilibili Digest 可以下载音频，并发送给你指定的托管转写服务。它只会在你点击按钮时运行，开关关闭时完全不会启动。",
+      asrEnableLabel: "启用语音转写兜底",
+      asrProviderLabel: "转写服务",
+      asrHintSiliconflow: "OpenAI 兼容接口 api.siliconflow.cn，国内可直连。",
+      asrHintOpenai: "api.openai.com 的 Whisper 接口，需要能访问境外网络。",
+      asrHintGroq: "api.groq.com 的快速 Whisper 接口，需要能访问境外网络。",
+      asrHintCustom: "任意兼容 OpenAI /audio/transcriptions 的服务地址。",
+      asrApiKeyLabel: "转写服务 API 密钥",
+      asrModelLabel: "模型",
+      asrBaseUrlLabel: "服务地址",
+      asrMaxMbLabel: "可转写的最大音频（MB）",
+      asrTimestampHint:
+        "返回时间戳的模型（whisper-1、whisper-large-v3）能保证点击跳转精确。只返回纯文本的模型同样可用，但时间轴会根据音频总时长估算。",
+      asrPrivacyNote:
+        "开启后，点击“转写音频”会把该视频的音轨发送给上面的服务。概览、笔记和讲解仍然只发送给 DeepSeek。请先确认该服务的条款与价格。",
+      asrAddKey: "请填写转写服务 API 密钥，或关闭该开关。",
+      asrPermissionDenied:
+        "Chrome 拒绝了该服务地址的访问权限，转写暂时无法运行。请再次保存，并在弹窗中选择“允许”。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
@@ -349,6 +392,14 @@ const YTD_OPTIONS = (() => {
     );
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
+    const asrEnabledInput = doc.getElementById("asrEnabled");
+    const asrProviderSelect = doc.getElementById("asrProvider");
+    const asrProviderHint = doc.getElementById("asrProviderHint");
+    const asrApiKeyInput = doc.getElementById("asrApiKey");
+    const asrModelInput = doc.getElementById("asrModel");
+    const asrModelPresets = doc.getElementById("asrModelPresets");
+    const asrBaseUrlInput = doc.getElementById("asrBaseUrl");
+    const asrMaxMbInput = doc.getElementById("asrMaxMb");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -371,6 +422,92 @@ const YTD_OPTIONS = (() => {
     function setStatus(element, key, params = {}) {
       statusStates.set(element, { key, params });
       renderStatus(element);
+    }
+
+    // --- Speech-to-text fallback -----------------------------------------
+    // The endpoint is a third-party origin, so it is not part of the
+    // install-time host permissions. It is requested here, on an explicit save
+    // by the user, and only when the fallback is switched on.
+
+    const asrApi = root.BILI_ASR;
+    const asrFields = [
+      asrProviderSelect,
+      asrApiKeyInput,
+      asrModelInput,
+      asrBaseUrlInput,
+      asrMaxMbInput,
+    ];
+    const ASR_HINT_KEYS = {
+      siliconflow: "asrHintSiliconflow",
+      openai: "asrHintOpenai",
+      groq: "asrHintGroq",
+      custom: "asrHintCustom",
+    };
+    const BYTES_PER_MB = 1024 * 1024;
+
+    function fillAsrProviders() {
+      if (!asrApi) return;
+      asrProviderSelect.innerHTML = "";
+      for (const id of asrApi.PROVIDER_IDS) {
+        const option = doc.createElement("option");
+        option.value = id;
+        option.textContent = asrApi.PROVIDERS[id].label;
+        asrProviderSelect.appendChild(option);
+      }
+    }
+
+    function renderAsrModelPresets(providerId) {
+      if (!asrApi) return;
+      asrModelPresets.innerHTML = "";
+      for (const model of asrApi.modelsFor(providerId)) {
+        const option = doc.createElement("option");
+        option.value = model.id;
+        asrModelPresets.appendChild(option);
+      }
+    }
+
+    function renderAsrProviderHint() {
+      if (!asrApi) return;
+      asrProviderHint.textContent = translate(
+        currentLanguage,
+        ASR_HINT_KEYS[asrProviderSelect.value] || "asrHintCustom",
+      );
+      asrProviderHint.style.display = asrProviderSelect.value ? "" : "none";
+    }
+
+    /** The whole block is inert until the switch is on; say so by dimming it. */
+    function updateAsrFieldState() {
+      const enabled = asrEnabledInput.checked;
+      for (const field of asrFields) field.disabled = !enabled;
+    }
+
+    function applyAsrProviderPreset() {
+      if (!asrApi) return;
+      const provider = asrApi.resolveProvider(asrProviderSelect.value);
+      if (provider.baseUrl) {
+        asrBaseUrlInput.value = provider.baseUrl;
+        asrModelInput.value = provider.defaultModel;
+      }
+      renderAsrModelPresets(asrProviderSelect.value);
+      renderAsrProviderHint();
+    }
+
+    /** Ask for the endpoint origin, which is deliberately not install-time. */
+    async function requestEndpointPermission(baseUrl) {
+      if (!asrApi) return { granted: true };
+      const pattern = asrApi.endpointOriginPattern(baseUrl);
+      if (!pattern) return { granted: false };
+      const permissions = root.chrome && root.chrome.permissions;
+      if (!permissions) return { granted: true };
+      try {
+        if (await permissions.contains({ origins: [pattern] })) {
+          return { granted: true };
+        }
+        const granted = await permissions.request({ origins: [pattern] });
+        return { granted: granted === true };
+      } catch (_error) {
+        return { granted: false };
+      }
     }
 
     function applyLanguage(language) {
@@ -408,6 +545,7 @@ const YTD_OPTIONS = (() => {
         nextDraft.prompt,
       );
       updateLanguageButtonState(languageButtons, currentLanguage);
+      renderAsrProviderHint();
       for (const element of statusStates.keys()) renderStatus(element);
     }
 
@@ -420,6 +558,18 @@ const YTD_OPTIONS = (() => {
         const settings = migration.settings;
 
         aiApiKeyInput.value = settings.aiApiKey;
+        asrEnabledInput.checked = settings.asrEnabled === true;
+        asrProviderSelect.value = settings.asrProvider;
+        asrApiKeyInput.value = settings.asrApiKey;
+        asrModelInput.value = settings.asrModel;
+        asrBaseUrlInput.value = settings.asrBaseUrl;
+        asrMaxMbInput.value = String(
+          Math.round(settings.asrMaxBytes / BYTES_PER_MB),
+        );
+        renderAsrModelPresets(settings.asrProvider);
+        renderAsrProviderHint();
+        updateAsrFieldState();
+
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -444,11 +594,30 @@ const YTD_OPTIONS = (() => {
 
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
+        asrEnabled: asrEnabledInput.checked,
+        asrProvider: asrProviderSelect.value,
+        asrApiKey: asrApiKeyInput.value,
+        asrModel: asrModelInput.value,
+        asrBaseUrl: asrBaseUrlInput.value,
+        asrMaxBytes: Number(asrMaxMbInput.value) * BYTES_PER_MB,
       });
 
       if (!settings.aiApiKey) {
         setStatus(saveStatus, "addDeepseekKey");
         return;
+      }
+
+      if (settings.asrEnabled && !settings.asrApiKey) {
+        setStatus(saveStatus, "asrAddKey");
+        return;
+      }
+
+      if (settings.asrEnabled) {
+        const permission = await requestEndpointPermission(settings.asrBaseUrl);
+        if (!permission.granted) {
+          setStatus(saveStatus, "asrPermissionDenied");
+          return;
+        }
       }
 
       try {
@@ -495,6 +664,11 @@ const YTD_OPTIONS = (() => {
       await loadSettings();
       setStatus(dataStatus, "allDataDeleted");
     }
+
+    fillAsrProviders();
+    updateAsrFieldState();
+    asrEnabledInput.addEventListener("change", updateAsrFieldState);
+    asrProviderSelect.addEventListener("change", applyAsrProviderPreset);
 
     form.addEventListener("submit", saveSettings);
     copyCustomizationPromptBtn.addEventListener(
