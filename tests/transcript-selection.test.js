@@ -114,7 +114,7 @@ test("the transcript view restores without resuming automatic scrolling", () => 
   );
 });
 
-test("the first non-YouTube navigation is checked again after commit", () => {
+test("the first non-bilibili navigation is checked again after commit", () => {
   assert.match(
     source,
     /function getNavigationUrl\(changeInfo, tab\)[\s\S]*changeInfo\.status !== "loading"[\s\S]*changeInfo\.status !== "complete"[\s\S]*tab\.pendingUrl \|\| tab\.url/,

@@ -1,6 +1,6 @@
 const YTD_OPTIONS = (() => {
   const LANGUAGE_STORAGE_KEY = "ytd_options_language";
-  const PREVIEW_STORAGE_PREFIX = "youtubeDigestPreview:";
+  const PREVIEW_STORAGE_PREFIX = "bilibiliDigestPreview:";
   const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN"]);
 
   const COPY = {

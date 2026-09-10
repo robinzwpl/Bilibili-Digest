@@ -132,8 +132,6 @@ function loadBackgroundHelpers({
       STORAGE_KEY: "ytd_settings",
       normalize: (value) => value,
       chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
-      canonicalYouTubeUrl: (videoId) =>
-        `https://www.youtube.com/watch?v=${videoId}`,
     },
   };
   sandbox.globalThis = sandbox;
@@ -142,7 +140,7 @@ function loadBackgroundHelpers({
   return sandbox.__YTD_TRANSLATION_TESTING__;
 }
 
-test("non-YouTube tabs explicitly close before their panel is disabled", async () => {
+test("non-bilibili tabs explicitly close before their panel is disabled", async () => {
   const calls = [];
   const background = loadBackgroundHelpers({
     sidePanel: {
@@ -353,7 +351,7 @@ test("semantic segmentation rebuilds sentences across caption boundaries", () =>
   assert.equal(segments[1].start, 5);
 });
 
-test("a huge raw Supadata entry is split into seekable bounded segments", () => {
+test("a huge raw subtitle entry is split into seekable bounded segments", () => {
   const { groupTranscriptEntries } = loadSidepanelHelpers();
   const text = Array.from({ length: 900 }, (_, index) => `word${index}`).join(" ");
   const segments = groupTranscriptEntries([
