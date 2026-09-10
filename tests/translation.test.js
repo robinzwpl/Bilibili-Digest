@@ -66,6 +66,7 @@ function loadSidepanelHelpers({
     YTD_SETTINGS: {},
   };
   sandbox.globalThis = sandbox;
+  vm.runInNewContext(read("platform.js"), sandbox);
   vm.runInNewContext(read("sidepanel.js"), sandbox);
   return sandbox.__YTD_TRANSCRIPT_TESTING__;
 }
@@ -136,6 +137,7 @@ function loadBackgroundHelpers({
     },
   };
   sandbox.globalThis = sandbox;
+  vm.runInNewContext(read("platform.js"), sandbox);
   vm.runInNewContext(read("background.js"), sandbox);
   return sandbox.__YTD_TRANSLATION_TESTING__;
 }
@@ -255,8 +257,11 @@ test("new videos default to Original while returning videos restore their choice
   const { loadDisplayLanguageMode, saveDisplayLanguageMode } =
     loadSidepanelHelpers();
 
+  // Single-language display: the per-video mode is no longer persisted.
+  // loadDisplayLanguageMode always returns "original"; startDigest derives the
+  // effective mode from whether the track needs translation.
   await saveDisplayLanguageMode("video-a", "bilingual");
-  assert.equal(await loadDisplayLanguageMode("video-a"), "bilingual");
+  assert.equal(await loadDisplayLanguageMode("video-a"), "original");
   assert.equal(await loadDisplayLanguageMode("unseen-video"), "original");
 });
 
@@ -309,7 +314,7 @@ test("selected transcript notes keep exact text and row timestamp", async () => 
   });
 
   const result = await handleSaveNote(
-    "video123",
+    "BV1Fg411D7Jy",
     92.9,
     "Test video",
     "Test channel",
@@ -323,7 +328,7 @@ test("selected transcript notes keep exact text and row timestamp", async () => 
   assert.equal(result.note.timestampSeconds, 92);
   assert.equal(
     result.note.timestampedUrl,
-    "https://www.youtube.com/watch?v=video123&t=92s",
+    "https://www.bilibili.com/video/BV1Fg411D7Jy?t=92",
   );
 });
 

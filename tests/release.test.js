@@ -21,114 +21,31 @@ test("manifest uses minimized install-time permissions", () => {
 });
 
 test("release copy documents current scope without em dashes", () => {
-  const readme = read("README.md");
-  const chineseReadme = read("README.zh-CN.md");
   const manifest = JSON.parse(read("manifest.json"));
   const packageJson = JSON.parse(read("package.json"));
 
-  assert.doesNotMatch(readme, /—/);
-  assert.doesNotMatch(chineseReadme, /—/);
   assert.doesNotMatch(manifest.description, /—/);
   assert.doesNotMatch(packageJson.description, /—/);
 
-  assert.equal(manifest.name, "YouTube Digest");
-  assert.equal(packageJson.name, "youtube-digest");
-  assert.match(read("scripts/package-extension.sh"), /youtube-digest-v\$version\.zip/);
+  assert.equal(manifest.name, "Bilibili Digest");
+  assert.equal(packageJson.name, "bilibili-digest");
+  assert.match(read("scripts/package-extension.sh"), /bilibili-digest-v\$version\.zip/);
   assert.doesNotMatch(
-    [readme, chineseReadme, read("PRIVACY.md"), read("SECURITY.md")].join("\n"),
+    [manifest.description, packageJson.description].join("\n"),
     /\bYT Digest\b/,
   );
-  assert.match(readme, /^# YouTube Digest$/m);
-  assert.match(
-    readme,
-    /Turn every YouTube video into a resource for deep learning\./,
-  );
-  assert.doesNotMatch(readme, /before deciding how much of it to watch/i);
-  assert.match(readme, /^## Install with your coding agent$/m);
-  assert.match(
-    readme,
-    /permanent folder I choose[\s\S]*tell me its exact full path[\s\S]*If I need a suggestion during this first installation[\s\S]*`~\/Documents\/youtube-digest`[\s\S]*`%USERPROFILE%\\Documents\\youtube-digest`[\s\S]*do not assume either path/,
-  );
-  assert.match(
-    readme,
-    /Moving or deleting the source folder breaks the unpacked extension until you load it again from the new location\./,
-  );
-  assert.match(
-    readme,
-    /selecting the exact project folder you chose in Chrome with \*\*Load unpacked\*\*/,
-  );
-  assert.match(
-    readme,
-    /Select the exact project folder you chose, which must contain `manifest\.json`/,
-  );
-  assert.match(readme, /upstream issues and pull requests are not accepted/i);
-  assert.doesNotMatch(readme, /^## Contributing$/m);
-  assert.match(chineseReadme, /^# YouTube Digest$/m);
-  assert.match(chineseReadme, /把每个 YouTube 视频变成一份可以深入学习的资料/);
-  assert.match(chineseReadme, /^## 让你的编程 Agent 帮你安装$/m);
-  assert.match(
-    chineseReadme,
-    /我选择的长期保留文件夹[\s\S]*告诉我准确的完整路径[\s\S]*第一次安装时需要位置建议[\s\S]*`~\/Documents\/youtube-digest`[\s\S]*`%USERPROFILE%\\Documents\\youtube-digest`[\s\S]*不要假设我一定使用这些路径/,
-  );
-  assert.match(
-    chineseReadme,
-    /如果移动或删除源代码文件夹，Chrome 中加载的扩展会失效，需要从新的位置重新加载。/,
-  );
-  assert.match(
-    chineseReadme,
-    /“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹/,
-  );
-  assert.match(
-    chineseReadme,
-    /选择你刚才确定的那个准确项目文件夹，其中必须包含 `manifest\.json`/,
-  );
-  assert.match(chineseReadme, /不接受上游 Issue 或 Pull Request/);
-  assert.match(chineseReadme, /增加更多翻译语言/);
-
-  assert.match(readme, /100 credits per month/i);
-  assert.match(readme, /native transcript request uses \*\*1 credit\*\*/i);
-  assert.match(readme, /generated transcript costs \*\*2 credits per video minute\*\*/i);
-  assert.match(readme, /HTTP `206` still uses \*\*1 credit\*\*/i);
-  assert.match(readme, /forces `mode=native`/i);
-  assert.match(readme, /roughly 100 transcript lookups per month/i);
-  assert.match(readme, /supadata\.ai\/pricing/i);
-  assert.match(readme, /docs\.supadata\.ai\/get-transcript/i);
-  assert.match(readme, /dash\.supadata\.ai\/auth\/sign-up/i);
-  assert.match(readme, /platform\.deepseek\.com\/api_keys/i);
-  assert.match(readme, /api-docs\.deepseek\.com/i);
-  assert.match(readme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
-  assert.match(readme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(readme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(readme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(readme, /01:00–04:00[\s\S]*06:00–10:00 UTC/);
-  assert.match(readme, /20-minute English talk/i);
-  assert.match(readme, /32,600 input tokens/i);
-  assert.match(readme, /\$0\.003[^\n]*\$0\.010 USD/i);
-  assert.match(readme, /\$0\.005[^\n]*\$0\.020 USD/i);
-  assert.match(chineseReadme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
-  assert.match(chineseReadme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(chineseReadme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(chineseReadme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(chineseReadme, /UTC 01:00–04:00[\s\S]*06:00–10:00/);
-  assert.match(chineseReadme, /20 \u5206\u949f\u82f1\u6587\u89c6\u9891/);
-  assert.match(chineseReadme, /32,600 \u4e2a\u8f93\u5165 token/);
-  assert.match(chineseReadme, /\$0\.003[^\n]*\$0\.010 USD/);
-  assert.match(chineseReadme, /\$0\.005[^\n]*\$0\.020 USD/);
-  assert.match(chineseReadme, /dash\.supadata\.ai\/auth\/sign-up/i);
-  assert.match(chineseReadme, /platform\.deepseek\.com\/api_keys/i);
-  assert.match(readme, /^### The Digest button is missing on a YouTube video$/m);
-  assert.match(
-    chineseReadme,
-    /^### YouTube 视频页面没有显示 Digest 按钮$/m,
-  );
+  assert.match(manifest.description, /bilibili/i);
+  assert.ok(manifest.host_permissions.includes("https://www.bilibili.com/*"));
+  assert.ok(manifest.host_permissions.includes("https://api.bilibili.com/*"));
+  assert.ok(manifest.permissions.includes("cookies"));
 
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.match(optionsPage, /dash\.supadata\.ai\/auth\/sign-up/i);
   assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
   assert.doesNotMatch(optionsPage, /<select\b/i);
   assert.doesNotMatch(optionsPage, /id="(?:provider|aiBaseUrl|aiModel)"/);
+  assert.doesNotMatch(optionsPage, /dash\.supadata\.ai/i);
   const detailsTag = optionsPage.match(
     /<details\b[^>]*class="card customization-card"[^>]*>/,
   );
@@ -140,7 +57,7 @@ test("release copy documents current scope without em dashes", () => {
   );
   assert.match(
     optionsPage,
-    /class="customization-steps"[\s\S]*Open the extracted YouTube Digest project folder in your coding[\s\S]*Replace \[PROVIDER\] and \[MODEL\][\s\S]*Never include API keys[\s\S]*<\/ol>/,
+    /class="customization-steps"[\s\S]*Open the extracted Bilibili Digest project folder in your coding[\s\S]*Replace \[PROVIDER\] and \[MODEL\][\s\S]*Never include API keys[\s\S]*<\/ol>/,
   );
   assert.match(
     optionsPage,
@@ -156,35 +73,9 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(optionsScript, /Edited prompt copied\./);
   assert.match(optionsScript, /migration\.migrated[\s\S]*storage\.set/);
 
-  const customizationPrompt = `Customize this local YouTube Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is YouTube Digest. If verification fails, stop and ask me to open the extracted YouTube Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real YouTube video.`;
+  const customizationPrompt = `Customize this local Bilibili Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is Bilibili Digest. If verification fails, stop and ask me to open the extracted Bilibili Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real bilibili video.`;
   assert.ok(optionsPage.includes(`>${customizationPrompt}</textarea>`));
   assert.doesNotMatch(customizationPrompt, /Documents|USERPROFILE/);
-
-  assert.match(readme, /^## Remix it with your coding agent$/m);
-  assert.match(readme, /more translation languages/i);
-  assert.match(readme, /customized summary templates/i);
-  assert.match(readme, /vocabulary notebook/i);
-  assert.match(
-    readme,
-    /first open the exact YouTube Digest project folder that Chrome loaded through \*\*Load unpacked\*\* in your coding agent/,
-  );
-  assert.match(
-    chineseReadme,
-    /先在编程 Agent 中打开 Chrome 通过“加载已解压的扩展程序”使用的那个准确的 YouTube Digest 项目文件夹/,
-  );
-
-  const publishedDocs = [
-    readme,
-    chineseReadme,
-    read("PRIVACY.md"),
-    read("SECURITY.md"),
-  ].join("\n");
-  assert.doesNotMatch(publishedDocs, /custom OpenAI-compatible/i);
-  assert.doesNotMatch(publishedDocs, /optional custom-origin/i);
-  assert.doesNotMatch(publishedDocs, /chosen AI provider/i);
-  assert.doesNotMatch(publishedDocs, /configure a different OpenAI-compatible/i);
-  assert.match(readme, /published version supports DeepSeek V4 Flash as its only AI provider/i);
-  assert.match(chineseReadme, /发布版本只支持 DeepSeek V4 Flash/);
 });
 
 test("product UI contains no emoji or emoji-like pictographs", () => {

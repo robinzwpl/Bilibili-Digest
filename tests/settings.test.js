@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const settings = require("../settings.js");
+const platform = require("../platform.js");
 
 test("DeepSeek defaults use V4 Flash", () => {
   const normalized = settings.normalize({
@@ -9,14 +10,12 @@ test("DeepSeek defaults use V4 Flash", () => {
     aiApiKey: "  example-key  ",
     aiBaseUrl: "https://api.example.com/v1",
     aiModel: "example-model",
-    supadataApiKey: "  example-supadata  ",
   });
 
   assert.equal(normalized.provider, "deepseek");
   assert.equal(normalized.aiBaseUrl, "https://api.deepseek.com");
   assert.equal(normalized.aiModel, "deepseek-v4-flash");
   assert.equal(normalized.aiApiKey, "example-key");
-  assert.equal(normalized.supadataApiKey, "example-supadata");
   assert.equal(
     settings.chatCompletionsUrl(),
     "https://api.deepseek.com/chat/completions",
@@ -29,7 +28,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "custom-secret",
     aiBaseUrl: "https://api.example.com/v1",
     aiModel: "example-model",
-    supadataApiKey: " supadata-secret ",
   };
   const first = settings.migrateLegacyCustom(legacy);
 
@@ -38,7 +36,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   assert.equal(first.settings.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
   assert.equal(first.settings.aiModel, settings.DEFAULTS.aiModel);
   assert.equal(first.settings.aiApiKey, "");
-  assert.equal(first.settings.supadataApiKey, "supadata-secret");
 
   const second = settings.migrateLegacyCustom(first.settings);
   assert.equal(second.migrated, false);
@@ -51,13 +48,30 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
 });
 
-test("Supadata receives a canonical YouTube URL", () => {
+test("bilibili canonical URL is derived from bvid", () => {
   assert.equal(
-    settings.canonicalYouTubeUrl("ydTeb_I0b94"),
-    "https://www.youtube.com/watch?v=ydTeb_I0b94",
+    platform.canonicalBilibiliUrl("BV1Fg411D7Jy"),
+    "https://www.bilibili.com/video/BV1Fg411D7Jy",
   );
   assert.throws(
-    () => settings.canonicalYouTubeUrl('"><script>'),
-    /Invalid YouTube video ID/,
+    () => platform.canonicalBilibiliUrl('"><script>'),
+    /Invalid bilibili video ID/,
   );
+});
+
+test("extractBvid parses bilibili video URLs", () => {
+  assert.equal(
+    platform.extractBvid("https://www.bilibili.com/video/BV1Fg411D7Jy"),
+    "BV1Fg411D7Jy",
+  );
+  assert.equal(
+    platform.extractBvid(
+      "https://www.bilibili.com/video/BV1Fg411D7Jy?spm_id_from=333.999",
+    ),
+    "BV1Fg411D7Jy",
+  );
+  assert.equal(platform.extractBvid("https://www.bilibili.com/"), null);
+  assert.equal(platform.extractBvid("BV1Fg411D7Jy"), "BV1Fg411D7Jy");
+  assert.equal(platform.isBilibiliVideoPage("https://www.bilibili.com/video/BV1Fg411D7Jy"), true);
+  assert.equal(platform.isBilibiliVideoPage("https://www.bilibili.com/"), false);
 });

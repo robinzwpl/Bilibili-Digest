@@ -1,7 +1,7 @@
 /**
  * SIDE PANEL LOGIC
  *
- * Handles the UI for YouTube Digest: video detection, transcript analysis,
+ * Handles the UI for Bilibili Digest: video detection, transcript analysis,
  * rendering results, and export features.
  */
 
@@ -26,13 +26,15 @@ let currentChannelName = "";
 let currentVideoDescription = "";
 let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
-let youtubeTabId = null; // Store the YouTube tab ID for reliable messaging
+let bilibiliTabId = null; // Store the bilibili tab ID for reliable messaging
 let errorAction = null;
 
 // --- Translation state ---
-// The universal language control supports original content, Chinese, and an
-// aligned bilingual view across Transcript, Overview, and Notes.
+// Single-language display: Chinese subtitles show as-is; foreign subtitles are
+// auto-translated to Simplified Chinese. The user-facing mode switcher is
+// hidden; currentTranscriptMode is driven by whether the track needs translation.
 let currentTranscriptMode = "original";
+let currentNeedsTranslation = false;
 const DISPLAY_LANGUAGE_MODE_KEY = "ytd_display_language_modes_by_video";
 const DISPLAY_LANGUAGE_MODES = new Set(["original", "zh", "bilingual"]);
 let translationGeneration = 0; // Invalidates responses from older UI modes/videos.
@@ -162,7 +164,7 @@ function splitOversizedThought(text, maxChars) {
 /**
  * Reconstructs complete sentences across raw caption boundaries. Each segment
  * keeps the timestamp of the first caption that contributed text. Character
- * and time limits prevent a malformed Supadata entry from becoming one giant
+ * and time limits prevent a malformed subtitle entry from becoming one giant
  * row while punctuation remains the preferred boundary.
  */
 function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
@@ -261,7 +263,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     action: "checkConfig",
   });
 
-  if (!configStatus.hasSupadataKey || !configStatus.hasAiKey) {
+  if (!configStatus.hasAiKey) {
     showConfigError(configStatus);
     return;
   }
@@ -269,7 +271,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await checkCurrentTab();
 });
 
-// Listen for messages from the Digest button on YouTube page
+// Listen for messages from the Digest button on the bilibili page
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startDigestFromButton") {
     // Load the digest for the current video. Served from cache when we've
@@ -299,14 +301,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // FOLLOW THE ACTIVE TAB
 // ============================================================
 // The panel watches which tab is in front of it and reacts:
-//   - Front tab is NOT YouTube  -> the panel closes itself (window.close()).
+//   - Front tab is NOT a bilibili video page  -> the panel closes itself (window.close()).
 //     We do this OURSELVES rather than relying only on the background
 //     script's per-tab enable/disable, because Chrome doesn't reliably
 //     apply per-tab panel state to tabs spawned in unusual ways (e.g. a
 //     link opened from another app) — which let the panel linger on
-//     non-YouTube pages.
-//   - Front tab IS YouTube but on a different video -> refresh the digest.
-//     YouTube is a single-page app (clicking a video swaps content without
+//     non-bilibili pages.
+//   - Front tab IS bilibili but on a different video -> refresh the digest.
+//     bilibili is a single-page app (clicking a video swaps content without
 //     a reload), so we track URL changes; startDigest() caches per video,
 //     making re-checks instant and free for already-digested videos.
 //
@@ -320,7 +322,7 @@ chrome.windows.getCurrent().then((w) => {
 });
 
 function scheduleDigestRefresh() {
-  // Small delay lets YouTube finish rendering the new video's title and
+  // Small delay lets bilibili finish rendering the new video's title and
   // description before we read them. Also collapses rapid-fire URL events
   // into a single refresh.
   clearTimeout(navigationRefreshTimer);
@@ -335,11 +337,11 @@ function panelIsShowingResults() {
 }
 
 /**
- * Reacts to the URL now in front of the panel: close on non-YouTube,
+ * Reacts to the URL now in front of the panel: close on non-bilibili,
  * refresh the digest when the video changed.
  */
 function handleFrontTabUrl(url) {
-  if (!(url || "").startsWith("https://www.youtube.com")) {
+  if (!BILI_PLATFORM.isBilibiliVideoPage(url)) {
     // Start the position save, then close in this same event callback. Chrome
     // does not reliably honor window.close() after an asynchronous wait.
     void saveCurrentTranscriptViewState();
@@ -358,7 +360,7 @@ function handleFrontTabUrl(url) {
 /**
  * Gets the best URL from a tab update that can change the visible page.
  * The status events repeat the close request after Chrome commits the first
- * non-YouTube navigation, when an early URL event alone can be lost.
+ * non-bilibili navigation, when an early URL event alone can be lost.
  */
 function getNavigationUrl(changeInfo, tab) {
   if (changeInfo.url) return changeInfo.url;
@@ -368,9 +370,9 @@ function getNavigationUrl(changeInfo, tab) {
   return tab.pendingUrl || tab.url || "";
 }
 
-// Fires when a tab starts or completes navigation, including YouTube's
+// Fires when a tab starts or completes navigation, including bilibili's
 // no-reload navigation. The completion event is a deliberate second close
-// attempt for the first non-YouTube page.
+// attempt for the first non-bilibili page.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!tab.active) return;
   if (panelWindowId !== null && tab.windowId !== panelWindowId) return;
@@ -475,7 +477,7 @@ function setNotesFilter(showAll) {
 async function checkCurrentTab() {
   try {
     // The panel belongs only to the active tab. Looking for another open
-    // YouTube tab here can keep an old transcript visible on a non-YouTube
+    // bilibili tab here can keep an old transcript visible on a non-bilibili
     // page, so never fall back to background tabs.
     const tabs = await chrome.tabs.query({
       active: true,
@@ -483,20 +485,20 @@ async function checkCurrentTab() {
     });
     const tab = tabs[0] || null;
 
-    debugLog("[YouTube Digest Panel] Found tab:", tab?.id, tab?.url);
+    debugLog("[Bilibili Digest Panel] Found tab:", tab?.id, tab?.url);
 
     if (!tab?.url) {
       showState("welcome");
       return;
     }
 
-    if (!tab.url.startsWith("https://www.youtube.com")) {
+    if (!BILI_PLATFORM.isBilibiliVideoPage(tab.url)) {
       handleFrontTabUrl(tab.url);
       return;
     }
 
     // Store the tab ID for reliable messaging later
-    youtubeTabId = tab.id;
+    bilibiliTabId = tab.id;
 
     const videoId = extractVideoId(tab.url);
 
@@ -509,7 +511,7 @@ async function checkCurrentTab() {
           action: "relayToContent",
           payload: { action: "getVideoInfo" },
         });
-        debugLog("[YouTube Digest Panel] getVideoInfo result:", result);
+        debugLog("[Bilibili Digest Panel] getVideoInfo result:", result);
         if (result.success && result.response) {
           currentVideoTitle = result.response.title || "";
           currentChannelName = result.response.channelName || "";
@@ -517,7 +519,7 @@ async function checkCurrentTab() {
           currentVideoDuration = result.response.duration || 0;
         }
       } catch (e) {
-        console.error("[YouTube Digest Panel] getVideoInfo error:", e);
+        console.error("[Bilibili Digest Panel] getVideoInfo error:", e);
         currentVideoTitle = "";
         currentChannelName = "";
         currentVideoDescription = "";
@@ -535,28 +537,7 @@ async function checkCurrentTab() {
 }
 
 function extractVideoId(url) {
-  try {
-    const urlObj = new URL(url);
-
-    if (
-      urlObj.hostname.includes("youtube.com") &&
-      urlObj.searchParams.has("v")
-    ) {
-      return urlObj.searchParams.get("v");
-    }
-
-    if (urlObj.hostname === "youtu.be") {
-      return urlObj.pathname.slice(1);
-    }
-
-    if (urlObj.pathname.startsWith("/embed/")) {
-      return urlObj.pathname.split("/")[2];
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
+  return BILI_PLATFORM.extractBvid(url);
 }
 
 // ============================================================
@@ -602,6 +583,7 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptText = cached.transcriptText;
     currentTranscriptTimestamped = cached.transcriptTimestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
+    currentNeedsTranslation = cached.needsTranslation === true;
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -670,15 +652,8 @@ async function startDigest(videoId, videoUrl) {
   });
 
   if (!transcriptResult.success) {
-    if (transcriptResult.error === "NO_SUPADATA_KEY") {
-      showError(
-        "API key missing",
-        "Add your Supadata API key in YouTube Digest Settings.",
-      );
-      return;
-    }
     showError(
-      "No transcript found",
+      "No subtitle found",
       transcriptResult.message || transcriptResult.error,
     );
     return;
@@ -688,6 +663,12 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptText = transcriptResult.transcriptText;
   currentTranscriptTimestamped = transcriptResult.transcriptTextTimestamped;
   currentTranscriptLanguage = transcriptResult.language || null;
+  currentNeedsTranslation = transcriptResult.needsTranslation === true;
+
+  // Single-language display: Chinese tracks render directly; foreign tracks
+  // auto-translate to Simplified Chinese (the "zh" mode reuses the existing
+  // translation pipeline, whose target language is already Simplified Chinese).
+  currentTranscriptMode = currentNeedsTranslation ? "zh" : "original";
 
   // Render transcript immediately (no LLM needed)
   renderTranscript();
@@ -794,7 +775,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
           videoTitle: currentVideoTitle,
         });
       } catch (error) {
-        console.error("[YouTube Digest] Interface batch error:", error);
+        console.error("[Bilibili Digest] Interface batch error:", error);
         result = { success: false, error: error.message };
       }
       if (
@@ -821,7 +802,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
       await updateCache();
     }
   } catch (error) {
-    console.error("[YouTube Digest] Interface translation error:", error);
+    console.error("[Bilibili Digest] Interface translation error:", error);
     missing.forEach((segment) =>
       interfaceTranslationFailures.add(segment.cacheKey),
     );
@@ -904,7 +885,7 @@ function renderAnalysisResults(analysis) {
     `;
     li.addEventListener("click", () => {
       debugLog(
-        "[YouTube Digest Panel] Chapter clicked:",
+        "[Bilibili Digest Panel] Chapter clicked:",
         chapter.timestamp,
         chapter.timestampSeconds,
       );
@@ -935,7 +916,7 @@ function renderAnalysisResults(analysis) {
     `;
     div.addEventListener("click", () => {
       debugLog(
-        "[YouTube Digest Panel] Quote clicked:",
+        "[Bilibili Digest Panel] Quote clicked:",
         quote.timestamp,
         quote.timestampSeconds,
       );
@@ -1003,7 +984,7 @@ async function saveQuoteAsNote(quote, btn) {
       // Refresh notes list if on Notes tab
       loadNotes(currentVideoId);
     } else {
-      console.error("[YouTube Digest] Save quote as note failed:", result.error);
+      console.error("[Bilibili Digest] Save quote as note failed:", result.error);
       btn.textContent = "Error";
       setTimeout(() => {
         btn.textContent = originalText;
@@ -1011,7 +992,7 @@ async function saveQuoteAsNote(quote, btn) {
       }, 1500);
     }
   } catch (error) {
-    console.error("[YouTube Digest] Save quote as note error:", error);
+    console.error("[Bilibili Digest] Save quote as note error:", error);
     btn.textContent = "Error";
     setTimeout(() => {
       btn.textContent = originalText;
@@ -1351,7 +1332,9 @@ function copyTranscript() {
 
 function exportTranscript() {
   const transcriptContent = getDisplayedTranscriptText();
-  const videoUrl = `https://youtube.com/watch?v=${currentVideoId}`;
+  const videoUrl = currentVideoId
+    ? BILI_PLATFORM.canonicalBilibiliUrl(currentVideoId)
+    : "";
 
   let exportText = "";
   exportText += `TRANSCRIPT\n`;
@@ -1368,7 +1351,7 @@ function exportTranscript() {
 
   exportText += `TRANSCRIPT:\n\n${transcriptContent}\n`;
   exportText += `\n${"—".repeat(60)}\n`;
-  exportText += `Exported by YouTube Digest\n`;
+  exportText += `Exported by Bilibili Digest\n`;
 
   const filename = `${sanitizeFilename(currentVideoTitle)}-transcript.txt`;
   downloadTextFile(exportText, filename);
@@ -1396,8 +1379,9 @@ function showState(state) {
   // which is why the tabs could vanish when re-opening an already-analyzed video.
   document.getElementById("tabsNav").style.display =
     state === "results" ? "flex" : "none";
-  document.getElementById("transcriptModeControl").style.display =
-    state === "results" ? "inline-flex" : "none";
+  // Single-language display: the Original/中文/双语 switcher is intentionally
+  // hidden. Subtitles render in Simplified Chinese automatically.
+  document.getElementById("transcriptModeControl").style.display = "none";
 
   if (state !== "results") {
     stopPlaybackTracking();
@@ -1419,13 +1403,12 @@ function showError(title, message) {
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasSupadataKey) missingKeys.push("Supadata");
   if (!configStatus.hasAiKey) missingKeys.push("AI provider");
 
   showState("error");
   document.getElementById("errorTitle").textContent = "API Keys Missing";
   document.getElementById("errorMessage").textContent =
-    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in YouTube Digest Settings.`;
+    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in Bilibili Digest Settings.`;
   document.getElementById("errorBtn").textContent = "Open Settings";
   errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
 }
@@ -1544,7 +1527,7 @@ async function triggerAnalysis() {
     // Save to cache now that we have analysis
     await saveToCache(currentVideoId);
   } catch (error) {
-    console.error("[YouTube Digest Panel] Analysis error:", error);
+    console.error("[Bilibili Digest Panel] Analysis error:", error);
     if (chapterList)
       chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">Error: ${escapeHtml(error.message)}</li>`;
   }
@@ -1557,9 +1540,9 @@ async function triggerAnalysis() {
 // ============================================================
 
 async function seekTo(seconds) {
-  debugLog("[YouTube Digest Panel] seekTo called with:", seconds);
+  debugLog("[Bilibili Digest Panel] seekTo called with:", seconds);
   if (seconds === undefined || seconds === null) {
-    debugLog("[YouTube Digest Panel] seekTo aborted - no seconds value");
+    debugLog("[Bilibili Digest Panel] seekTo aborted - no seconds value");
     return;
   }
 
@@ -1569,15 +1552,15 @@ async function seekTo(seconds) {
   };
 
   try {
-    // Try direct messaging to the stored YouTube tab first (fastest/reliable)
-    if (youtubeTabId) {
+    // Try direct messaging to the stored bilibili tab first (fastest/reliable)
+    if (bilibiliTabId) {
       try {
-        await chrome.tabs.sendMessage(youtubeTabId, payload);
-        debugLog("[YouTube Digest Panel] seekTo direct success");
+        await chrome.tabs.sendMessage(bilibiliTabId, payload);
+        debugLog("[Bilibili Digest Panel] seekTo direct success");
         return;
       } catch (directErr) {
         debugLog(
-          "[YouTube Digest Panel] Direct seekTo failed, falling back to relay:",
+          "[Bilibili Digest Panel] Direct seekTo failed, falling back to relay:",
           directErr.message,
         );
       }
@@ -1588,9 +1571,9 @@ async function seekTo(seconds) {
       action: "relayToContent",
       payload,
     });
-    debugLog("[YouTube Digest Panel] seekTo relay result:", result);
+    debugLog("[Bilibili Digest Panel] seekTo relay result:", result);
   } catch (error) {
-    console.error("[YouTube Digest Panel] seekTo error:", error);
+    console.error("[Bilibili Digest Panel] seekTo error:", error);
   }
 }
 
@@ -1853,7 +1836,7 @@ function setupExplainFeature() {
           button.disabled = false;
         }, 900);
       } catch (error) {
-        console.error("[YouTube Digest] Save selected note error:", error);
+        console.error("[Bilibili Digest] Save selected note error:", error);
         button.textContent = "Error";
         setTimeout(() => {
           button.textContent = originalText;
@@ -1944,7 +1927,7 @@ function getTranscriptContext(selectedText) {
 /**
  * Saves the current digest results to persistent local storage.
  * Results survive browser restarts — reopening the same video loads from cache
- * without consuming API tokens or Supadata calls.
+ * without consuming API tokens or subtitle refetches.
  * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
 async function saveToCache(videoId) {
@@ -1971,6 +1954,7 @@ async function saveToCache(videoId) {
       transcriptText: currentTranscriptText,
       transcriptTimestamped: currentTranscriptTimestamped,
       transcriptLanguage: currentTranscriptLanguage,
+      needsTranslation: currentNeedsTranslation,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,
@@ -2027,7 +2011,7 @@ async function evictOldCacheEntries(maxEntries) {
       .map((e) => e.key);
     if (toRemove.length > 0) {
       await chrome.storage.local.remove(toRemove);
-      debugLog(`[YouTube Digest] Evicted ${toRemove.length} old cache entries`);
+      debugLog(`[Bilibili Digest] Evicted ${toRemove.length} old cache entries`);
     }
   } catch (error) {
     console.error("Cache eviction error:", error);
@@ -2091,7 +2075,7 @@ async function loadNotes(videoId) {
       renderNotes(result.notes, videoId);
     }
   } catch (error) {
-    console.error("[YouTube Digest Panel] Load notes error:", error);
+    console.error("[Bilibili Digest Panel] Load notes error:", error);
   }
 }
 
@@ -2174,7 +2158,7 @@ function renderNotes(notes, filteredVideoId) {
         }
       });
 
-    // Copy timestamp button — copies the timestamped YouTube link
+    // Copy timestamp button — copies the timestamped bilibili link
     noteEl
       .querySelector(".note-copy-link")
       .addEventListener("click", async () => {
@@ -2213,7 +2197,7 @@ async function deleteNote(noteId) {
       noteId: noteId,
     });
   } catch (error) {
-    console.error("[YouTube Digest Panel] Delete note error:", error);
+    console.error("[Bilibili Digest Panel] Delete note error:", error);
   }
 }
 
@@ -2273,7 +2257,7 @@ function stopPlaybackTracking() {
 
 /**
  * One tick of the playback tracker. Gets current video time from the
- * YouTube tab and highlights + scrolls to the matching transcript entry.
+ * bilibili tab and highlights + scrolls to the matching transcript entry.
  */
 async function playbackTrackingTick() {
   try {
@@ -2287,7 +2271,7 @@ async function playbackTrackingTick() {
     const currentTime = result.response.currentTime || 0;
     highlightActiveEntry(currentTime);
   } catch (error) {
-    // Silently ignore — YouTube tab might be closed or navigated away
+    // Silently ignore — bilibili tab might be closed or navigated away
   }
 }
 
@@ -2393,7 +2377,7 @@ async function loadTranscriptViewState(videoId) {
     if (!Number.isFinite(scrollTop) || scrollTop < 0) return null;
     return { videoId, scrollTop };
   } catch (error) {
-    console.error("[YouTube Digest] Reading position load error:", error);
+    console.error("[Bilibili Digest] Reading position load error:", error);
     return null;
   }
 }
@@ -2417,7 +2401,7 @@ async function saveTranscriptViewState(videoId, scrollTop) {
     );
     await storage.set({ [TRANSCRIPT_VIEW_STATE_KEY]: recentStates });
   } catch (error) {
-    console.error("[YouTube Digest] Reading position save error:", error);
+    console.error("[Bilibili Digest] Reading position save error:", error);
   }
 }
 
@@ -2516,21 +2500,12 @@ function restorePendingTranscriptViewState(videoId) {
 // ============================================================
 
 async function loadDisplayLanguageMode(videoId) {
-  if (!videoId) {
-    setTranscriptModeButtons("original");
-    return "original";
-  }
-  try {
-    const stored = await chrome.storage.local.get(DISPLAY_LANGUAGE_MODE_KEY);
-    const mode = stored?.[DISPLAY_LANGUAGE_MODE_KEY]?.[videoId]?.mode;
-    currentTranscriptMode = DISPLAY_LANGUAGE_MODES.has(mode)
-      ? mode
-      : "original";
-  } catch (error) {
-    currentTranscriptMode = "original";
-  }
-  setTranscriptModeButtons(currentTranscriptMode);
-  return currentTranscriptMode;
+  // Single-language display: the stored per-video mode is ignored. The mode is
+  // derived from whether the subtitle track needs translation, decided after
+  // the transcript loads. Return "original" here; startDigest will override.
+  currentTranscriptMode = "original";
+  setTranscriptModeButtons("original");
+  return "original";
 }
 
 async function saveDisplayLanguageMode(videoId, mode) {

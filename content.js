@@ -1,16 +1,18 @@
 /**
- * CONTENT SCRIPT
+ * CONTENT SCRIPT (bilibili)
  *
- * This script runs ON the YouTube page itself. It can see and modify
- * the YouTube page DOM (the HTML elements).
+ * This script runs on bilibili video pages (www.bilibili.com/video/BVxxx).
+ * It can see and modify the page DOM.
  *
  * It handles:
- * 1. Extracting video info (title, channel name) from the page
- * 2. Injecting "key moment" markers onto YouTube's progress bar
- * 3. Adding a "Digest" button to YouTube's action bar (next to Share/Save)
+ * 1. Extracting video info (title, up name, description) from the page
+ * 2. Adding a "Digest" button to bilibili's action toolbar
+ * 3. Adding a "Note" button overlay on top of the player
+ * 4. Timestamp seeking (side panel -> player)
  *
- * Think of it like a robot sitting inside the YouTube tab,
- * reading the page and making small visual changes.
+ * Bilibili is an SPA too: clicking a related video swaps content without a
+ * full reload, so we reconcile buttons on history changes and via a
+ * MutationObserver on the body.
  */
 
 const DEBUG = false;
@@ -22,90 +24,42 @@ const debugLog = (...args) => {
 // GLOBAL STATE
 // ============================================================
 
-let ytdNoteButton = null;
-let ytdNoteButtonTimer = null;
-let ytdNoteKeyboardListenerAdded = false;
-let ytdNoteButtonRetryTimer = null;
-let ytdDigestButton = null;
+let noteButton = null;
+let noteButtonTimer = null;
+let noteKeyboardListenerAdded = false;
+let noteButtonRetryTimer = null;
+let digestButton = null;
 let digestButtonObserver = null;
 let digestButtonReconcileTimer = null;
 let digestButtonResizeListenerAdded = false;
+let lastBvid = null;
 
 // ============================================================
 // INITIALIZATION
 // ============================================================
 
-/**
- * When the page loads, inject our Digest button and Note button.
- * We wait a bit for YouTube's UI to fully render.
- */
+function currentBvid() {
+  return BILI_PLATFORM.extractBvid(window.location.href);
+}
+
+function isVideoPage() {
+  return BILI_PLATFORM.isBilibiliVideoPage(window.location.href);
+}
+
 function init() {
-  // Register the global "n" keyboard shortcut once
-  if (!ytdNoteKeyboardListenerAdded) {
+  if (!noteKeyboardListenerAdded) {
     document.addEventListener("keydown", handleNoteKeyboardShortcut);
-    ytdNoteKeyboardListenerAdded = true;
+    noteKeyboardListenerAdded = true;
   }
 
-  // Try to inject the buttons immediately
+  lastBvid = currentBvid();
   injectDigestButton();
   tryInjectNoteButton();
-
-  // Also set up an observer to handle YouTube's dynamic content loading
-  // (YouTube is an SPA, so elements appear/disappear as you navigate)
   setupButtonObserver();
   setupDigestButtonResizeListener();
+  setupNavigationWatcher();
 }
 
-/**
- * Attempts to inject the note button. If the player container isn't ready yet,
- * retry a few times with a short delay. YouTube renders the player asynchronously
- * after navigation, so a single immediate attempt can miss it.
- */
-function tryInjectNoteButton() {
-  if (!window.location.pathname.includes("/watch")) return;
-
-  // Clear any existing retry so we don't stack timers
-  if (ytdNoteButtonRetryTimer) {
-    clearInterval(ytdNoteButtonRetryTimer);
-    ytdNoteButtonRetryTimer = null;
-  }
-
-  let attempts = 0;
-  const maxAttempts = 30; // ~3 seconds of retrying
-
-  function attempt() {
-    attempts++;
-    const playerContainer = document.querySelector(
-      "#movie_player.html5-video-player, #movie_player, .html5-video-player",
-    );
-
-    if (playerContainer) {
-      injectNoteButton();
-      if (ytdNoteButtonRetryTimer) {
-        clearInterval(ytdNoteButtonRetryTimer);
-        ytdNoteButtonRetryTimer = null;
-      }
-      return;
-    }
-
-    if (attempts >= maxAttempts) {
-      debugLog(
-        "[YouTube Digest Content] Player container not found after retries, giving up",
-      );
-      if (ytdNoteButtonRetryTimer) {
-        clearInterval(ytdNoteButtonRetryTimer);
-        ytdNoteButtonRetryTimer = null;
-      }
-    }
-  }
-
-  attempt();
-  if (!ytdNoteButton || !ytdNoteButton.isConnected) {
-    ytdNoteButtonRetryTimer = setInterval(attempt, 100);
-  }
-}
-
-// Run init when DOM is ready
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
 } else {
@@ -116,31 +70,22 @@ if (document.readyState === "loading") {
 // MESSAGE HANDLING
 // ============================================================
 
-/**
- * Listen for messages from the side panel or background script.
- * When they ask for video info, we read it from the page.
- * When they send key moments, we highlight them on the progress bar.
- */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  debugLog("[YouTube Digest Content] Received message:", message.action, message);
+  debugLog("[Bilibili Digest Content] Received message:", message.action);
 
   if (message.action === "getVideoInfo") {
-    // Read video title and channel name from the page
-    const info = extractVideoInfo();
-    debugLog("[YouTube Digest Content] Returning video info:", info);
-    sendResponse(info);
+    sendResponse(extractVideoInfo());
     return false; // Synchronous response
   }
 
   if (message.action === "highlightMoments") {
-    // Key moment markers disabled — chapters are shown in the side panel only.
+    // Timeline markers disabled — chapters live only in the side panel.
     sendResponse({ success: true });
     return false;
   }
 
   if (message.action === "getCurrentTime") {
-    // Return the current video playback time (used by auto-scroll)
-    const video = document.querySelector("video.html5-main-video");
+    const video = findVideoElement();
     sendResponse({
       currentTime: video ? Math.floor(video.currentTime) : 0,
       paused: video ? video.paused : true,
@@ -149,195 +94,161 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "seekTo") {
-    // Jump the video to a specific timestamp
-    debugLog("[YouTube Digest Content] Seeking to:", message.seconds);
     seekToTimestamp(message.seconds);
     sendResponse({ success: true });
     return false;
   }
 
   if (message.action === "showNoteSavedFeedback") {
-    // Show brief feedback that note was saved
     showNoteSavedToast(message.note);
     sendResponse({ success: true });
     return false;
   }
 
-  // Unknown action - still send a response to prevent hanging
-  debugLog("[YouTube Digest Content] Unknown action:", message.action);
   sendResponse({ success: false, error: "Unknown action" });
   return false;
 });
 
 // ============================================================
-// DIGEST BUTTON INJECTION
+// VIDEO / PLAYER ELEMENT RESOLUTION
 // ============================================================
 
 /**
- * Injects a "Digest" button into YouTube's action bar.
- * The button appears next to Share, Save, etc. below the video.
- *
- * When clicked, it opens the YouTube Digest side panel.
+ * Resolve the player <video> element. Bilibili's player DOM has changed a few
+ * times; try several known selectors and fall back to any <video> inside the
+ * player container.
  */
-function isVisibleDigestHost(element) {
-  if (!element || !element.isConnected) return false;
+function findVideoElement() {
+  return (
+    document.querySelector(
+      ".bpx-player-container video, " +
+        ".bpx-player-video video, " +
+        "video.bpx-player-video, " +
+        "video.html5-video, " +
+        "#bilibili-player video, " +
+        "video",
+    ) || null
+  );
+}
 
+// ============================================================
+// DIGEST BUTTON INJECTION
+// ============================================================
+
+function isVisible(element) {
+  if (!element || !element.isConnected) return false;
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
-
   const style = window.getComputedStyle(element);
   return style.display !== "none" && style.visibility !== "hidden";
 }
 
 /**
- * YouTube keeps hidden copies of its responsive action toolbar in the DOM.
- * querySelector() can return one of those 0x0 copies before the toolbar the
- * viewer can actually see, so inspect every candidate and resolve the native
- * button group inside the visible action row for the current video.
+ * Find the visible action toolbar to host the Digest button. Bilibili renders
+ * the video action row (like/coin/favorite/share) in `.video-toolbar`; we pick
+ * the first visible one and return its `.toolbar-right` inner group when
+ * available, else the toolbar itself.
  */
 function findDigestButtonHost() {
-  const primaryActionRows = Array.from(
-    document.querySelectorAll("ytd-watch-metadata #actions-inner"),
-  );
-
-  for (const actionRow of primaryActionRows) {
-    if (!isVisibleDigestHost(actionRow)) continue;
-
-    const visibleButtonGroup = Array.from(
-      actionRow.querySelectorAll("#top-level-buttons-computed"),
-    ).find(isVisibleDigestHost);
-    if (visibleButtonGroup) return visibleButtonGroup;
+  const toolbars = Array.from(document.querySelectorAll(".video-toolbar"));
+  for (const toolbar of toolbars) {
+    if (!isVisible(toolbar)) continue;
+    const right = toolbar.querySelector(".toolbar-right, .ops");
+    if (right && isVisible(right)) return right;
+    return toolbar;
   }
 
-  const fallbackCandidates = Array.from(
-    document.querySelectorAll(
-      "ytd-watch-metadata #actions #top-level-buttons-computed, " +
-        "ytd-watch-metadata #top-level-buttons-computed, " +
-        "#primary #actions #top-level-buttons-computed",
-    ),
-  );
-
+  // Fallbacks for older / alternate layouts.
   return (
-    fallbackCandidates.find(
-      (candidate) =>
-        isVisibleDigestHost(candidate) &&
-        (candidate.closest("ytd-watch-metadata") ||
-          candidate.closest("#primary")),
+    document.querySelector(
+      ".video-toolbar-right, " +
+        ".ops, " +
+        ".video-info .toolbar-right",
     ) || null
   );
 }
 
 function createDigestButton() {
-  const digestButton = document.createElement("button");
-  digestButton.id = "ytd-digest-button";
-  digestButton.type = "button";
-  digestButton.setAttribute("aria-label", "Open YouTube Digest");
-  digestButton.innerHTML = `<span class="ytd-digest-label">Digest</span>`;
+  const button = document.createElement("button");
+  button.id = "bili-digest-button";
+  button.type = "button";
+  button.setAttribute("aria-label", "Open Bilibili Digest");
+  button.innerHTML = `<span>Digest</span>`;
 
-  // Style the button — rounded pill in our terracotta accent, sized to sit
-  // comfortably among YouTube's native action buttons.
-  digestButton.style.cssText = `
+  button.style.cssText = `
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 0 18px;
-    height: 36px;
+    padding: 0 16px;
+    height: 30px;
     border: none;
-    border-radius: 18px;
-    background: #c8674f;
+    border-radius: 15px;
+    background: #00a1d6;
     color: white;
-    font-family: "Roboto", "Arial", sans-serif;
-    font-size: 14px;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
-    margin-right: 8px;
+    margin-left: 8px;
     transition: background 0.2s, transform 0.1s;
     flex: 0 0 auto;
     align-self: center;
-    width: max-content;
-    min-width: max-content;
-    max-width: max-content;
     white-space: nowrap;
   `;
 
-  // Hover effects
-  digestButton.addEventListener("mouseenter", () => {
-    digestButton.style.background = "#b25742";
-    digestButton.style.transform = "scale(1.02)";
+  button.addEventListener("mouseenter", () => {
+    button.style.background = "#0089b8";
+  });
+  button.addEventListener("mouseleave", () => {
+    button.style.background = "#00a1d6";
   });
 
-  digestButton.addEventListener("mouseleave", () => {
-    digestButton.style.background = "#c8674f";
-    digestButton.style.transform = "scale(1)";
-  });
-
-  // Click handler — open the side panel
-  digestButton.addEventListener("click", async (e) => {
+  button.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
-
-    debugLog("[YouTube Digest] Digest button clicked");
-
-    // Send message to background script to open side panel
     try {
-      const result = await chrome.runtime.sendMessage({
-        action: "openSidePanel",
-      });
-      debugLog("[YouTube Digest] openSidePanel response:", result);
+      await chrome.runtime.sendMessage({ action: "openSidePanel" });
     } catch (err) {
-      console.error("[YouTube Digest] Failed to open side panel:", err);
+      console.error("[Bilibili Digest] Failed to open side panel:", err);
     }
   });
 
-  ytdDigestButton = digestButton;
-  return digestButton;
+  digestButton = button;
+  return button;
 }
 
-/**
- * Reconciles the Digest button with YouTube's currently visible action row.
- * This is intentionally idempotent because YouTube rebuilds its watch page
- * during navigation and at responsive breakpoints.
- */
 function injectDigestButton() {
   const existingButtons = Array.from(
-    document.querySelectorAll("#ytd-digest-button"),
+    document.querySelectorAll("#bili-digest-button"),
   );
 
-  if (!window.location.pathname.includes("/watch")) {
+  if (!isVideoPage()) {
     existingButtons.forEach((button) => button.remove());
-    ytdDigestButton = null;
+    digestButton = null;
     return false;
   }
 
-  const actionsContainer = findDigestButtonHost();
-  if (!actionsContainer) {
-    debugLog("[YouTube Digest Content] Visible actions container not found yet");
+  const host = findDigestButtonHost();
+  if (!host) {
+    debugLog("[Bilibili Digest Content] Visible toolbar not found yet");
     return false;
   }
 
-  let digestButton = existingButtons.find(
-    (button) => button === ytdDigestButton,
-  );
-
-  if (!digestButton) {
-    existingButtons.forEach((button) => button.remove());
-    existingButtons.length = 0;
-    digestButton = createDigestButton();
+  let button = existingButtons.find((b) => b === digestButton);
+  if (!button) {
+    existingButtons.forEach((b) => b.remove());
+    button = createDigestButton();
   }
 
-  existingButtons.forEach((button) => {
-    if (button !== digestButton) button.remove();
+  existingButtons.forEach((b) => {
+    if (b !== button) b.remove();
   });
 
-  if (digestButton.parentElement !== actionsContainer) {
-    // YouTube turns #actions-inner into a vertical flex column at narrow
-    // breakpoints. A direct child there stretches into a full-width second
-    // row, so keep Digest inside the native horizontal button group and
-    // prepend it to preserve visibility when space is limited.
-    actionsContainer.insertBefore(digestButton, actionsContainer.firstChild);
+  if (button.parentElement !== host) {
+    host.appendChild(button);
   }
 
-  debugLog("[YouTube Digest Content] Digest button reconciled");
+  debugLog("[Bilibili Digest Content] Digest button reconciled");
   return true;
 }
 
@@ -345,7 +256,6 @@ function scheduleDigestButtonReconciliation(delay = 80) {
   if (digestButtonReconcileTimer) {
     clearTimeout(digestButtonReconcileTimer);
   }
-
   digestButtonReconcileTimer = setTimeout(() => {
     digestButtonReconcileTimer = null;
     injectDigestButton();
@@ -354,31 +264,22 @@ function scheduleDigestButtonReconciliation(delay = 80) {
 
 function setupDigestButtonResizeListener() {
   if (digestButtonResizeListenerAdded) return;
-
   window.addEventListener("resize", () => {
     scheduleDigestButtonReconciliation(120);
   });
   digestButtonResizeListenerAdded = true;
 }
 
-/**
- * Sets up a MutationObserver to watch for YouTube's dynamic content changes.
- * When the action buttons container appears (after navigation), we inject our button.
- */
 function setupButtonObserver() {
   if (digestButtonObserver) return;
-
   digestButtonObserver = new MutationObserver(() => {
-    // Check if we need to inject the buttons
-    if (window.location.pathname.includes("/watch")) {
+    if (isVideoPage()) {
       scheduleDigestButtonReconciliation();
-      if (!ytdNoteButton || !ytdNoteButton.isConnected) {
+      if (!noteButton || !noteButton.isConnected) {
         tryInjectNoteButton();
       }
     }
   });
-
-  // Watch the entire body for changes (YouTube rebuilds large chunks of the DOM)
   digestButtonObserver.observe(document.body, {
     childList: true,
     subtree: true,
@@ -389,55 +290,62 @@ function setupButtonObserver() {
 // NOTE BUTTON (Overlay on Video Player)
 // ============================================================
 
-/**
- * Injects a "Note" button overlay on top of the YouTube video player.
- * The button appears when the mouse enters or moves over the player and hides
- * after the cursor stays still for more than 2 seconds or leaves the player.
- */
-function injectNoteButton() {
-  // Don't inject if we're not on a video page
-  if (!window.location.pathname.includes("/watch")) return;
+function tryInjectNoteButton() {
+  if (!isVideoPage()) return;
 
-  // Don't inject if button already exists and is properly tracked.
-  // If a stale button exists (e.g., from a previous content-script instance),
-  // remove it and re-inject so event listeners are attached to the live one.
-  const existingButton = document.getElementById("ytd-note-button");
+  if (noteButtonRetryTimer) {
+    clearInterval(noteButtonRetryTimer);
+    noteButtonRetryTimer = null;
+  }
+
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  function attempt() {
+    attempts++;
+    const playerContainer = document.querySelector(
+      ".bpx-player-container, #bilibili-player",
+    );
+    if (playerContainer) {
+      injectNoteButton(playerContainer);
+      if (noteButtonRetryTimer) {
+        clearInterval(noteButtonRetryTimer);
+        noteButtonRetryTimer = null;
+      }
+      return;
+    }
+    if (attempts >= maxAttempts) {
+      if (noteButtonRetryTimer) {
+        clearInterval(noteButtonRetryTimer);
+        noteButtonRetryTimer = null;
+      }
+    }
+  }
+
+  attempt();
+  if (!noteButton || !noteButton.isConnected) {
+    noteButtonRetryTimer = setInterval(attempt, 100);
+  }
+}
+
+function injectNoteButton(playerContainer) {
+  if (!isVideoPage()) return;
+
+  const existingButton = document.getElementById("bili-note-button");
   if (existingButton) {
-    if (ytdNoteButton === existingButton && existingButton.isConnected) {
-      return; // already injected and connected
+    if (noteButton === existingButton && existingButton.isConnected) {
+      return;
     }
     existingButton.remove();
   }
 
-  // Find the video player container. YouTube rebuilds this dynamically, so
-  // we try the most common selectors.
-  const playerContainer = document.querySelector(
-    "#movie_player.html5-video-player, " +
-      "#movie_player, " +
-      ".html5-video-player",
-  );
-
-  if (!playerContainer) {
-    debugLog(
-      "[YouTube Digest Content] Player container not found yet, will retry",
-    );
-    return;
-  }
-
-  // Ensure the player container has relative positioning for absolute children
-  if (
-    window.getComputedStyle(playerContainer).position === "static" ||
-    !playerContainer.style.position
-  ) {
+  if (window.getComputedStyle(playerContainer).position === "static") {
     playerContainer.style.position = "relative";
   }
 
-  debugLog("[YouTube Digest Content] Injecting note button");
-
-  // Create the note button — a soft rounded pill that floats over the player
-  const noteButton = document.createElement("button");
-  noteButton.id = "ytd-note-button";
-  noteButton.innerHTML = `
+  const button = document.createElement("button");
+  button.id = "bili-note-button";
+  button.innerHTML = `
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right: 7px;">
       <path d="M12 20h9"></path>
       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
@@ -445,9 +353,7 @@ function injectNoteButton() {
     <span>Note</span>
   `;
 
-  // Soft rounded pill in the terracotta accent, with a gentle shadow.
-  // Start hidden; visibility is controlled by mouse activity.
-  noteButton.style.cssText = `
+  button.style.cssText = `
     position: absolute;
     top: 16px;
     right: 16px;
@@ -455,11 +361,11 @@ function injectNoteButton() {
     display: flex;
     align-items: center;
     padding: 9px 16px;
-    background: #c8674f;
+    background: #00a1d6;
     color: white;
     border: none;
     border-radius: 999px;
-    font-family: system-ui, -apple-system, "Roboto", sans-serif;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.2px;
@@ -470,80 +376,62 @@ function injectNoteButton() {
     box-shadow: 0 4px 14px rgba(0,0,0,0.3);
   `;
 
-  ytdNoteButton = noteButton;
+  noteButton = button;
 
-  // Show button when mouse enters or moves over the player.
-  // Hide after 2 seconds of idle or when the mouse leaves.
   playerContainer.addEventListener("mouseenter", () => {
     showNoteButton();
     resetNoteButtonTimer();
   });
-
   playerContainer.addEventListener("mousemove", () => {
     showNoteButton();
     resetNoteButtonTimer();
   });
-
   playerContainer.addEventListener("mouseleave", () => {
-    clearTimeout(ytdNoteButtonTimer);
-    ytdNoteButtonTimer = null;
+    clearTimeout(noteButtonTimer);
+    noteButtonTimer = null;
     hideNoteButton();
   });
 
-  // Hover effect — lift slightly
-  noteButton.addEventListener("mouseenter", () => {
-    noteButton.style.background = "#b25742";
-    noteButton.style.boxShadow = "0 6px 18px rgba(0,0,0,0.35)";
-    noteButton.style.transform = "translateY(-1px)";
+  button.addEventListener("mouseenter", () => {
+    button.style.background = "#0089b8";
+  });
+  button.addEventListener("mouseleave", () => {
+    button.style.background = "#00a1d6";
   });
 
-  noteButton.addEventListener("mouseleave", () => {
-    noteButton.style.background = "#c8674f";
-    noteButton.style.boxShadow = "0 4px 14px rgba(0,0,0,0.3)";
-    noteButton.style.transform = "translateY(0)";
-  });
-
-  // Click handler — save the current moment as a note
-  noteButton.addEventListener("click", async (e) => {
+  button.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
     await saveCurrentNote();
   });
 
-  playerContainer.appendChild(noteButton);
-
-  debugLog("[YouTube Digest Content] Note button injected");
+  playerContainer.appendChild(button);
+  debugLog("[Bilibili Digest Content] Note button injected");
 }
 
 function showNoteButton() {
-  if (!ytdNoteButton) return;
-  ytdNoteButton.style.opacity = "1";
-  ytdNoteButton.style.pointerEvents = "auto";
+  if (!noteButton) return;
+  noteButton.style.opacity = "1";
+  noteButton.style.pointerEvents = "auto";
 }
 
 function hideNoteButton() {
-  if (!ytdNoteButton) return;
-  ytdNoteButton.style.opacity = "0";
-  ytdNoteButton.style.pointerEvents = "none";
+  if (!noteButton) return;
+  noteButton.style.opacity = "0";
+  noteButton.style.pointerEvents = "none";
 }
 
 function resetNoteButtonTimer() {
-  clearTimeout(ytdNoteButtonTimer);
-  ytdNoteButtonTimer = setTimeout(() => {
+  clearTimeout(noteButtonTimer);
+  noteButtonTimer = setTimeout(() => {
     hideNoteButton();
   }, 2000);
 }
 
-/**
- * Handles the "n" keyboard shortcut for saving a note.
- * Only triggers on YouTube watch pages and when the user is not typing
- * in an input field.
- */
 function handleNoteKeyboardShortcut(e) {
-  if (!window.location.pathname.includes("/watch")) return;
+  if (!isVideoPage()) return;
   if (e.key !== "n" && e.key !== "N") return;
 
-  // Ignore if the user is typing in an input/textarea/contenteditable
   const active = document.activeElement;
   if (
     active &&
@@ -554,98 +442,81 @@ function handleNoteKeyboardShortcut(e) {
     return;
   }
 
-  // Prevent YouTube's own "n" shortcut (e.g. next video in playlist)
   e.preventDefault();
   e.stopPropagation();
-
-  // Show brief visual feedback on the button, then save
   showNoteButton();
   resetNoteButtonTimer();
   saveCurrentNote();
 }
 
-/**
- * Captures the current timestamp and saves it as a note.
- */
 async function saveCurrentNote() {
-  debugLog("[YouTube Digest] Saving note");
-
-  const video = document.querySelector("video.html5-main-video");
+  const video = findVideoElement();
   if (!video) {
-    console.error("[YouTube Digest] No video element found");
+    console.error("[Bilibili Digest] No video element found");
     return;
   }
 
-  // Go back 3 seconds to capture what was just said (user reacts after hearing it)
   const currentTime = Math.max(0, Math.floor(video.currentTime) - 3);
   const videoInfo = extractVideoInfo();
-  const videoId = new URLSearchParams(window.location.search).get("v");
+  const bvid = currentBvid();
 
-  const noteButton = ytdNoteButton;
-  const originalContent = noteButton ? noteButton.innerHTML : "";
+  const btn = noteButton;
+  const originalContent = btn ? btn.innerHTML : "";
 
-  if (noteButton) {
-    noteButton.innerHTML =
-      '<span style="letter-spacing: 0.2px;">SAVING...</span>';
-    noteButton.style.pointerEvents = "none";
+  if (btn) {
+    btn.innerHTML = '<span style="letter-spacing: 0.2px;">SAVING...</span>';
+    btn.style.pointerEvents = "none";
   }
 
   try {
     const result = await chrome.runtime.sendMessage({
       action: "saveNote",
-      videoId: videoId,
+      videoId: bvid,
       timestamp: currentTime,
       videoTitle: videoInfo.title,
       channelName: videoInfo.channelName,
     });
 
     if (result.success) {
-      if (noteButton) {
-        noteButton.innerHTML =
-          '<span style="letter-spacing: 0.2px;">SAVED</span>';
-        noteButton.style.background = "#7c8b6f";
+      if (btn) {
+        btn.innerHTML = '<span style="letter-spacing: 0.2px;">SAVED</span>';
+        btn.style.background = "#7c8b6f";
       }
       showNoteSavedToast(result.note);
     } else {
-      if (noteButton) {
-        noteButton.innerHTML =
-          '<span style="letter-spacing: 0.2px;">ERROR</span>';
+      if (btn) {
+        btn.innerHTML = '<span style="letter-spacing: 0.2px;">ERROR</span>';
       }
-      console.error("[YouTube Digest] Save note error:", result.error);
+      console.error("[Bilibili Digest] Save note error:", result.error);
     }
   } catch (err) {
-    if (noteButton) {
-      noteButton.innerHTML =
-        '<span style="letter-spacing: 0.2px;">ERROR</span>';
+    if (btn) {
+      btn.innerHTML = '<span style="letter-spacing: 0.2px;">ERROR</span>';
     }
-    console.error("[YouTube Digest] Save note exception:", err);
+    console.error("[Bilibili Digest] Save note exception:", err);
   }
 
   setTimeout(() => {
-    if (noteButton) {
-      noteButton.innerHTML = originalContent;
-      noteButton.style.background = "#c8674f";
-      noteButton.style.pointerEvents = "auto";
+    if (btn) {
+      btn.innerHTML = originalContent;
+      btn.style.background = "#00a1d6";
+      btn.style.pointerEvents = "auto";
     }
   }, 2000);
 }
 
-/**
- * Shows a toast notification when a note is saved.
- */
 function showNoteSavedToast(note) {
-  // Remove existing toast
-  const existing = document.getElementById("ytd-note-toast");
+  const existing = document.getElementById("bili-note-toast");
   if (existing) existing.remove();
 
   const toast = document.createElement("div");
-  toast.id = "ytd-note-toast";
+  toast.id = "bili-note-toast";
   toast.innerHTML = `
-    <div style="font-weight: 700; margin-bottom: 6px; color: #c8674f;">Note saved</div>
-    <div style="font-size: 12px; color: #6b6258; margin-bottom: 8px;">${escapeHtmlForContent(note.timestamp)} — ${escapeHtmlForContent(note.videoTitle)}</div>
-    <div style="font-size: 13px; line-height: 1.55; color: #2e2a24;">"${escapeHtmlForContent(note.text)}"</div>
+    <div style="font-weight: 700; margin-bottom: 6px; color: #00a1d6;">Note saved</div>
+    <div style="font-size: 12px; color: #6b6258; margin-bottom: 8px;">${escapeHtml(note.timestamp)} — ${escapeHtml(note.videoTitle)}</div>
+    <div style="font-size: 13px; line-height: 1.55; color: #2e2a24;">"${escapeHtml(note.text)}"</div>
     <div style="margin-top: 10px; font-size: 11px;">
-      <a href="${escapeHtmlForContent(note.timestampedUrl)}" style="color: #c8674f; font-weight: 600; text-decoration: none;">Copy link</a>
+      <a href="${escapeHtml(note.timestampedUrl)}" style="color: #00a1d6; font-weight: 600; text-decoration: none;">Copy link</a>
     </div>
   `;
 
@@ -660,21 +531,19 @@ function showNoteSavedToast(note) {
     padding: 16px 20px;
     max-width: 350px;
     box-shadow: 0 12px 32px rgba(50, 42, 32, 0.2);
-    font-family: system-ui, -apple-system, "Roboto", sans-serif;
-    animation: ytdSlideIn 0.3s ease;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    animation: biliSlideIn 0.3s ease;
   `;
 
-  // Add animation keyframes
   const style = document.createElement("style");
   style.textContent = `
-    @keyframes ytdSlideIn {
+    @keyframes biliSlideIn {
       from { transform: translateX(100%); opacity: 0; }
       to { transform: translateX(0); opacity: 1; }
     }
   `;
   document.head.appendChild(style);
 
-  // Copy link handler
   toast.querySelector("a").addEventListener("click", async (e) => {
     e.preventDefault();
     try {
@@ -687,9 +556,8 @@ function showNoteSavedToast(note) {
 
   document.body.appendChild(toast);
 
-  // Auto-dismiss after 5 seconds
   setTimeout(() => {
-    toast.style.animation = "ytdSlideIn 0.3s ease reverse";
+    toast.style.animation = "biliSlideIn 0.3s ease reverse";
     setTimeout(() => toast.remove(), 300);
   }, 5000);
 }
@@ -699,88 +567,58 @@ function showNoteSavedToast(note) {
 // ============================================================
 
 /**
- * Reads the video title, channel name, and description directly from YouTube's page.
- * These are just sitting in the HTML — we grab them from the DOM elements.
+ * Read title / up name / description from bilibili's DOM, with a fallback to
+ * the page's __INITIAL_STATE__ when available via the MAIN world.
  */
 function extractVideoInfo() {
-  // The video title is in an h1 element inside the #title container
-  const titleElement = document.querySelector(
-    "h1.ytd-watch-metadata yt-formatted-string, #title h1 yt-formatted-string",
-  );
+  const bvid = currentBvid() || "";
 
-  // The channel name is in the channel info section
-  const channelElement = document.querySelector(
-    "#channel-name yt-formatted-string a, ytd-channel-name yt-formatted-string a",
-  );
+  // Preferred DOM selectors (current bilibili layout).
+  const title =
+    document.querySelector("h1.video-title")?.textContent?.trim() ||
+    document.querySelector(".video-info-title")?.textContent?.trim() ||
+    "";
 
-  // Video duration from the video element
-  const videoElement = document.querySelector("video.html5-main-video");
+  const channelName =
+    document.querySelector(".up-name")?.textContent?.trim() ||
+    document.querySelector(".up-info-container .name")?.textContent?.trim() ||
+    document.querySelector(".up-detail .up-name")?.textContent?.trim() ||
+    "";
 
-  // Video description — YouTube has this in a few possible places
-  const descriptionElement = document.querySelector(
-    "#description-inner, " +
-      "ytd-watch-metadata #description yt-attributed-string, " +
-      "#description yt-formatted-string, " +
-      "ytd-expander#description yt-attributed-string",
-  );
+  const description =
+    document.querySelector(".basic-desc-info")?.textContent?.trim() ||
+    document.querySelector(".video-desc-container")?.textContent?.trim() ||
+    "";
+
+  const video = findVideoElement();
 
   return {
-    title: titleElement?.textContent?.trim() || "",
-    channelName: channelElement?.textContent?.trim() || "",
-    duration: videoElement?.duration || 0,
-    description: descriptionElement?.textContent?.trim() || "",
+    bvid,
+    title,
+    channelName,
+    duration: video ? Math.floor(video.duration) || 0 : 0,
+    description,
   };
-}
-
-// ============================================================
-// PROGRESS BAR KEY MOMENTS
-// ============================================================
-
-/**
- * Adds colored marker dots to YouTube's video progress bar
- * at the positions of key moments identified by the AI provider.
- *
- * How it works:
- * - YouTube's progress bar is a <div> element with a known class
- * - We calculate each moment's position as a percentage of total duration
- * - We inject small colored <div> elements at those positions
- * - The markers are absolutely positioned on top of the progress bar
- *
- * This is a "bonus feature" — it gives you a visual preview
- * of where the good stuff is in the video.
- */
-function highlightKeyMoments(moments, videoDuration) {
-  // Disabled: no timeline markers. Chapters live only in the side panel.
-  return;
 }
 
 // ============================================================
 // SEEK TO TIMESTAMP
 // ============================================================
 
-/**
- * Jumps the YouTube video to a specific timestamp (in seconds).
- * This is called when the user clicks a timestamp in the side panel.
- *
- * We simply set the video element's .currentTime property,
- * which is the standard HTML5 way to seek in a video.
- */
 function seekToTimestamp(seconds) {
-  const video = document.querySelector("video.html5-main-video");
+  const video = findVideoElement();
   if (!video) {
-    console.error("[YouTube Digest Content] No video element found for seek");
+    console.error("[Bilibili Digest Content] No video element found for seek");
     return;
   }
-
-  debugLog("[YouTube Digest Content] Seeking to:", seconds);
+  debugLog("[Bilibili Digest Content] Seeking to:", seconds);
   video.currentTime = seconds;
-  // Also play the video if it's paused
   if (video.paused) {
-    video.play().catch(() => {}); // Ignore autoplay errors
+    video.play().catch(() => {});
   }
 }
 
-function escapeHtmlForContent(text) {
+function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
   return div.innerHTML;
@@ -791,49 +629,54 @@ function escapeHtmlForContent(text) {
 // ============================================================
 
 /**
- * YouTube is a "Single Page Application" (SPA). This means when you
- * click on a new video, the page doesn't fully reload — YouTube
- * dynamically swaps out the content. So our content script stays alive
- * but needs to detect when the video changes.
- *
- * We watch for URL changes using the `yt-navigate-finish` event,
- * which YouTube fires after navigation completes. When that happens,
- * we clean up old markers and re-inject the button.
+ * Bilibili is an SPA. We detect video changes by watching URL changes via
+ * history events + a light polling fallback, then reconcile the buttons.
  */
-document.addEventListener("yt-navigate-finish", () => {
-  // Clean up old key moment markers when navigating to a new video
-  const existingMarkers = document.querySelectorAll(".ytd-key-moment-markers");
-  existingMarkers.forEach((m) => m.remove());
+function onNavigation() {
+  const bvid = currentBvid();
 
-  // Remove old buttons (they will be re-injected for the new video)
-  document
-    .querySelectorAll("#ytd-digest-button")
-    .forEach((button) => button.remove());
-  ytdDigestButton = null;
+  if (bvid === lastBvid && bvid) return; // same video, nothing to do
+  lastBvid = bvid;
+
+  // Clean up stale buttons.
+  document.querySelectorAll("#bili-digest-button").forEach((b) => b.remove());
+  digestButton = null;
   if (digestButtonReconcileTimer) {
     clearTimeout(digestButtonReconcileTimer);
     digestButtonReconcileTimer = null;
   }
 
-  const existingNoteButton = document.getElementById("ytd-note-button");
+  const existingNoteButton = document.getElementById("bili-note-button");
   if (existingNoteButton) existingNoteButton.remove();
-
-  // Reset note button state
-  ytdNoteButton = null;
-  clearTimeout(ytdNoteButtonTimer);
-  ytdNoteButtonTimer = null;
-  if (ytdNoteButtonRetryTimer) {
-    clearInterval(ytdNoteButtonRetryTimer);
-    ytdNoteButtonRetryTimer = null;
+  noteButton = null;
+  clearTimeout(noteButtonTimer);
+  noteButtonTimer = null;
+  if (noteButtonRetryTimer) {
+    clearInterval(noteButtonRetryTimer);
+    noteButtonRetryTimer = null;
   }
 
-  // Remove any toasts
-  const existingToast = document.getElementById("ytd-note-toast");
+  const existingToast = document.getElementById("bili-note-toast");
   if (existingToast) existingToast.remove();
 
-  // Re-inject buttons for the new video (with a small delay for YouTube to render)
   setTimeout(() => {
     scheduleDigestButtonReconciliation(0);
     tryInjectNoteButton();
   }, 500);
-});
+}
+
+function setupNavigationWatcher() {
+  // Bilibili pushes history state for video navigation.
+  window.addEventListener("popstate", onNavigation);
+  // Catch pushState-driven changes that don't fire popstate.
+  const originalPushState = history.pushState;
+  history.pushState = function (...args) {
+    const result = originalPushState.apply(this, args);
+    setTimeout(onNavigation, 0);
+    return result;
+  };
+  // Light polling fallback in case neither fired.
+  setInterval(() => {
+    if (currentBvid() !== lastBvid) onNavigation();
+  }, 1000);
+}

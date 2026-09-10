@@ -11,7 +11,6 @@ var YTD_SETTINGS = (() => {
     aiApiKey: "",
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
-    supadataApiKey: "",
   });
 
   function isLegacyCustom(input) {
@@ -28,10 +27,6 @@ var YTD_SETTINGS = (() => {
           : "",
       aiBaseUrl: DEFAULTS.aiBaseUrl,
       aiModel: DEFAULTS.aiModel,
-      supadataApiKey:
-        typeof input.supadataApiKey === "string"
-          ? input.supadataApiKey.trim()
-          : "",
     };
   }
 
@@ -46,14 +41,6 @@ var YTD_SETTINGS = (() => {
     return `${DEFAULTS.aiBaseUrl}/chat/completions`;
   }
 
-  function canonicalYouTubeUrl(videoId) {
-    const normalized = String(videoId || "").trim();
-    if (!/^[A-Za-z0-9_-]{6,20}$/.test(normalized)) {
-      throw new Error("Invalid YouTube video ID.");
-    }
-    return `https://www.youtube.com/watch?v=${normalized}`;
-  }
-
   return {
     STORAGE_KEY,
     DEFAULTS,
@@ -61,7 +48,6 @@ var YTD_SETTINGS = (() => {
     normalize,
     migrateLegacyCustom,
     chatCompletionsUrl,
-    canonicalYouTubeUrl,
   };
 })();
 

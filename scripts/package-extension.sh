@@ -22,16 +22,17 @@ if ((${#release_files[@]} == 0)); then
   exit 1
 fi
 
-version="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.version)' "$repo_root/manifest.json")"
+win_manifest="$(cygpath -w "$repo_root/manifest.json" 2>/dev/null || echo "$repo_root/manifest.json")"
+version="$(node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(m.version)' "$win_manifest")"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   printf 'Packaging failed: unsafe manifest version: %s\n' "$version" >&2
   exit 1
 fi
 
 mkdir -p "$dist_dir"
-temporary_dir="$(mktemp -d "$dist_dir/.youtube-digest-package.XXXXXX")"
-temporary_zip="$temporary_dir/youtube-digest.zip"
-output_zip="$dist_dir/youtube-digest-v$version.zip"
+temporary_dir="$(mktemp -d "$dist_dir/.bilibili-digest-package.XXXXXX")"
+temporary_zip="$temporary_dir/bilibili-digest.zip"
+output_zip="$dist_dir/bilibili-digest-v$version.zip"
 
 cleanup() {
   if [[ -f "$temporary_zip" ]]; then

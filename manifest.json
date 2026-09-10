@@ -1,17 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "YouTube Digest",
+  "name": "Bilibili Digest",
   "version": "1.2.0",
   "minimum_chrome_version": "116",
-  "description": "Turn YouTube videos into learning resources with transcripts, bilingual translation, AI overviews, and notes.",
-  "permissions": ["sidePanel", "storage", "tabs", "scripting"],
+  "description": "Turn Bilibili videos into learning resources with Chinese subtitles, AI overviews, and notes.",
+  "permissions": ["sidePanel", "storage", "tabs", "scripting", "cookies"],
   "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://api.supadata.ai/*",
+    "https://www.bilibili.com/*",
+    "https://api.bilibili.com/*",
+    "https://*.hdslb.com/*",
+    "https://*.bilivideo.com/*",
     "https://api.deepseek.com/*"
   ],
   "action": {
-    "default_title": "Open YouTube Digest",
+    "default_title": "Open Bilibili Digest",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -30,8 +32,8 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["content.js"],
+      "matches": ["https://www.bilibili.com/video/*"],
+      "js": ["platform.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

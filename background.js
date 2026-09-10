@@ -3,7 +3,7 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Fetching YouTube transcripts via Supadata API
+ * 2. Fetching bilibili subtitles via the bilibili API
  * 3. Calling DeepSeek to analyze the transcript
  * 4. Sending results back to the side panel
  *
@@ -13,7 +13,7 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js");
+importScripts("settings.js", "platform.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -23,12 +23,12 @@ const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
 
-// Prevent the YouTube content script from reading API keys or cached data.
+// Prevent the bilibili content script from reading API keys or cached data.
 // Side panel, options, and service-worker contexts remain trusted.
 chrome.storage.local
   .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
   .catch((error) =>
-    console.warn("[YouTube Digest] Could not restrict storage access:", error),
+    console.warn("[Bilibili Digest] Could not restrict storage access:", error),
   );
 
 async function getSettings() {
@@ -60,7 +60,9 @@ async function loadPromptSection(fileName, heading, variables = {}) {
     sectionStart,
     nextSection === -1 ? markdown.length : nextSection,
   );
-  const fenceMatch = section.match(/```(?:[A-Za-z0-9_-]+)?\n([\s\S]*?)\n```/);
+  const fenceMatch = section.match(
+    /```(?:[A-Za-z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/,
+  );
   if (!fenceMatch) {
     throw new Error(`Prompt section not found: ${fileName}#${heading}`);
   }
@@ -81,7 +83,7 @@ async function requestAiCompletion({
   const settings = await getSettings();
   if (!settings.aiApiKey) {
     const error = new Error(
-      "DeepSeek API key not configured. Open YouTube Digest Settings.",
+      "DeepSeek API key not configured. Open Bilibili Digest Settings.",
     );
     error.code = "NO_AI_KEY";
     throw error;
@@ -234,7 +236,7 @@ async function readBoundedAiResponse(response, onActivity) {
  * Chrome's Side Panel API lets us show a persistent panel alongside the page.
  */
 chrome.action.onClicked.addListener((tab) => {
-  if (!(tab.url || "").startsWith("https://www.youtube.com")) {
+  if (!BILI_PLATFORM.isBilibiliVideoPage(tab.url)) {
     void updatePanelForTab(tab.id, tab.url, tab.windowId);
     return;
   }
@@ -249,7 +251,7 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 /**
- * Allow the side panel to open on any page, but it's designed for YouTube.
+ * Allow the side panel to open on any page, but it's designed for bilibili.
  */
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
@@ -258,11 +260,11 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 });
 
 /**
- * Keep the side panel scoped to YouTube tabs only.
+ * Keep the side panel scoped to bilibili video tabs only.
  *
  * Chrome side panels are "global" by default: once opened, the panel follows
- * you to every tab. To make YouTube Digest behave like a YouTube-only tool, we
- * enable the panel on YouTube tabs and disable it everywhere else. Disabling
+ * you to every tab. To make Bilibili Digest behave like a bilibili-only tool, we
+ * enable the panel on bilibili video tabs and disable it everywhere else. Disabling
  * on a tab makes Chrome hide/close the panel for that tab, so it never lingers
  * on a new tab or some other website.
  *
@@ -270,7 +272,7 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
  *   - onUpdated: the current tab navigates to a new URL
  *   - onActivated: you switch to (or open) a different tab
  * The original code only handled onUpdated, which is why the panel stayed
- * visible when switching to an already-loaded non-YouTube tab.
+ * visible when switching to an already-loaded non-bilibili tab.
  */
 async function closePanelForTab(tabId, windowId) {
   // Chrome 141 added an explicit close API. On older supported versions,
@@ -278,7 +280,7 @@ async function closePanelForTab(tabId, windowId) {
   if (typeof chrome.sidePanel.close !== "function") return;
 
   try {
-    // This closes the tab-specific panel used by YouTube Digest.
+    // This closes the tab-specific panel used by Bilibili Digest.
     await chrome.sidePanel.close({ tabId });
     return;
   } catch (error) {
@@ -292,8 +294,8 @@ async function closePanelForTab(tabId, windowId) {
 }
 
 async function updatePanelForTab(tabId, url, windowId) {
-  const isYouTube = (url || "").startsWith("https://www.youtube.com");
-  if (!isYouTube) {
+  const isBilibili = BILI_PLATFORM.isBilibiliVideoPage(url);
+  if (!isBilibili) {
     // Close the visible instance first. Then disable this tab so Chrome cannot
     // reopen the global default panel as navigation settles.
     await closePanelForTab(tabId, windowId);
@@ -311,7 +313,7 @@ async function updatePanelForTab(tabId, url, windowId) {
  * Gets the best URL from a tab update that can change panel availability.
  * Chrome can apply tab-specific side-panel state before a navigation commits,
  * then reset it during the commit. Handling loading and complete gives the
- * first non-YouTube navigation a reliable second reconciliation.
+ * first non-bilibili navigation a reliable second reconciliation.
  */
 function getNavigationUrl(changeInfo, tab) {
   if (changeInfo.url) return changeInfo.url;
@@ -437,7 +439,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getSettings()
       .then((settings) =>
         sendResponse({
-          hasSupadataKey: !!settings.supadataApiKey,
           hasAiKey: !!settings.aiApiKey,
         }),
       )
@@ -453,7 +454,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "openSidePanel") {
     const tabId = sender.tab?.id;
-    debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);
+    debugLog("[Bilibili Digest BG] openSidePanel requested from tab:", tabId);
 
     // Re-enable the panel (it may have been disabled by auto-close) and open it.
     // IMPORTANT: we call setOptions + open synchronously (no await between them)
@@ -476,7 +477,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }, 300);
         })
         .catch((err) => {
-          console.error("[YouTube Digest BG] openSidePanel error:", err);
+          console.error("[Bilibili Digest BG] openSidePanel error:", err);
         });
     } else {
       // Fallback: find the active tab
@@ -491,7 +492,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
             chrome.sidePanel.open({ tabId: tabs[0].id }).catch((err) => {
               console.error(
-                "[YouTube Digest BG] openSidePanel fallback error:",
+                "[Bilibili Digest BG] openSidePanel fallback error:",
                 err,
               );
             });
@@ -505,78 +506,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Relay messages from side panel to content script
   if (message.action === "relayToContent") {
-    debugLog("[YouTube Digest BG] Relay request:", message.payload?.action);
+    debugLog("[Bilibili Digest BG] Relay request:", message.payload?.action);
     (async () => {
       try {
-        // Query specifically for YouTube tabs to avoid side panel context issues
+        // Query specifically for bilibili tabs to avoid side panel context issues
         // Try multiple query strategies to find the right tab
         let tabs = await chrome.tabs.query({
           active: true,
           lastFocusedWindow: true,
         });
         debugLog(
-          "[YouTube Digest BG] Active tab in last focused window:",
+          "[Bilibili Digest BG] Active tab in last focused window:",
           tabs.length,
           tabs[0]?.url,
         );
 
-        // If no YouTube tab found, try broader query
-        if (!tabs[0] || !tabs[0].url?.includes("youtube.com")) {
+        // If no bilibili tab found, try broader query
+        if (!tabs[0] || !tabs[0].url?.includes("bilibili.com")) {
           tabs = await chrome.tabs.query({
-            url: "https://www.youtube.com/*",
+            url: "https://www.bilibili.com/*",
             active: true,
           });
-          debugLog("[YouTube Digest BG] Active YouTube tabs:", tabs.length);
+          debugLog("[Bilibili Digest BG] Active bilibili tabs:", tabs.length);
         }
 
-        // Still nothing? Try any YouTube tab
+        // Still nothing? Try any bilibili tab
         if (!tabs[0]) {
-          tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
-          debugLog("[YouTube Digest BG] Any YouTube tabs:", tabs.length);
+          tabs = await chrome.tabs.query({ url: "https://www.bilibili.com/*" });
+          debugLog("[Bilibili Digest BG] Any bilibili tabs:", tabs.length);
         }
 
         if (tabs[0]) {
           debugLog(
-            "[YouTube Digest BG] Sending to tab:",
+            "[Bilibili Digest BG] Sending to tab:",
             tabs[0].id,
             "URL:",
             tabs[0].url,
           );
-          let response = await chrome.tabs.sendMessage(
+          const response = await chrome.tabs.sendMessage(
             tabs[0].id,
             message.payload,
           );
 
-          // For getVideoInfo, PREFER YouTube's own player data over the
-          // DOM scrape. The player's videoDetails is canonical: its `author`
-          // is always THIS video's channel and its `shortDescription` is the
-          // full text. The DOM scrape is unreliable — e.g. on a playlist page
-          // it grabbed the playlist owner's name ("Zara Zhang") instead of the
-          // real channel ("Replit and Stripe"), and its description is
-          // truncated while the box is collapsed. We fall back to the DOM
-          // only for fields the player didn't provide.
-          if (message.payload?.action === "getVideoInfo") {
-            const playerInfo = await getPlayerVideoDetails(tabs[0].id);
-            if (playerInfo) {
-              response = {
-                title: playerInfo.title || response?.title || "",
-                channelName:
-                  playerInfo.channelName || response?.channelName || "",
-                duration: playerInfo.duration || response?.duration || 0,
-                description:
-                  playerInfo.description || response?.description || "",
-              };
-            }
-          }
-
-          debugLog("[YouTube Digest BG] Got response from content:", response);
+          debugLog("[Bilibili Digest BG] Got response from content:", response);
           sendResponse({ success: true, response });
         } else {
-          debugLog("[YouTube Digest BG] No YouTube tab found");
-          sendResponse({ success: false, error: "No YouTube tab found" });
+          debugLog("[Bilibili Digest BG] No bilibili tab found");
+          sendResponse({ success: false, error: "No bilibili tab found" });
         }
       } catch (err) {
-        console.error("[YouTube Digest BG] Relay error:", err.message);
+        console.error("[Bilibili Digest BG] Relay error:", err.message);
         sendResponse({ success: false, error: err.message });
       }
     })();
@@ -584,188 +563,214 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-/**
- * Reads the current video's full details straight from YouTube's player.
- *
- * Content scripts live in an isolated world and can't touch the page's own
- * JavaScript. But with the "scripting" permission we can run a tiny function
- * in the page's MAIN world, where YouTube's player object lives. Its
- * getPlayerResponse() carries videoDetails with the FULL description —
- * unlike the DOM, which truncates it until the user clicks "...more".
- *
- * Returns null on any failure so callers can fall back to DOM scraping.
- */
-async function getPlayerVideoDetails(tabId) {
+// ============================================================
+// BILIBILI SUBTITLE FETCHING
+// ============================================================
+
+// Bilibili subtitle JSON is served from a CDN behind anti-abuse checks that
+// require a browser-like User-Agent and Referer. No API key is needed; the
+// login state (SESSDATA cookie) gates the subtitle-track list endpoint.
+const BILI_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+/** Build a Cookie header from the user's bilibili cookies (requires "cookies"). */
+async function getBilibiliCookieHeader() {
   try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: () => {
-        try {
-          const player = document.getElementById("movie_player");
-          const details = player?.getPlayerResponse?.()?.videoDetails;
-          if (!details) return null;
-          return {
-            title: details.title || "",
-            channelName: details.author || "",
-            description: details.shortDescription || "",
-            duration: Number(details.lengthSeconds) || 0,
-          };
-        } catch (e) {
-          return null;
-        }
-      },
-    });
-    return results?.[0]?.result || null;
+    const cookies = await chrome.cookies.getAll({ domain: ".bilibili.com" });
+    return cookies.map((c) => c.name + "=" + c.value).join("; ");
   } catch (e) {
-    console.warn("[YouTube Digest BG] Player details unavailable:", e.message);
-    return null;
+    return "";
   }
 }
 
-// ============================================================
-// TRANSCRIPT FETCHING VIA SUPADATA API
-// ============================================================
+/**
+ * Fetch bilibili video metadata (aid/cid) for a bvid via the view endpoint.
+ * Returns { aid, cid, title, ownerName } or { error }.
+ */
+async function fetchBilibiliView(bvid) {
+  const url = "https://api.bilibili.com/x/web-interface/view?bvid=" + encodeURIComponent(bvid);
+  const res = await fetch(url, {
+    headers: { "User-Agent": BILI_UA, Referer: "https://www.bilibili.com/" },
+  });
+  if (!res.ok) {
+    return { error: "VIEW_FAILED", message: "view request failed: " + res.status };
+  }
+  const json = await res.json();
+  if (json.code !== 0 || !json.data) {
+    return {
+      error: json.code === -404 ? "NOT_FOUND" : "VIEW_FAILED",
+      message: json.message || "view request error",
+    };
+  }
+  const d = json.data;
+  return { aid: d.aid, cid: d.cid, title: d.title || "", ownerName: d.owner ? d.owner.name : "" };
+}
 
 /**
- * Fetches the transcript for a YouTube video using Supadata API.
- *
- * Supadata is a specialized service that reliably extracts transcripts
- * from YouTube videos. It handles all the complexity of parsing YouTube's
- * internal data structures, dealing with different caption formats, etc.
- *
- * API Docs: https://docs.supadata.ai
- *
- * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
- * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
+ * Fetch the subtitle-track list for a video (aid/cid), WBI-signed, with cookies.
+ * Returns { subtitles, hasCookie } or { error }.
  */
-async function handleFetchTranscript(videoId) {
-  try {
-    const settings = await getSettings();
-    if (!settings.supadataApiKey) {
-      return {
-        success: false,
-        error: "NO_SUPADATA_KEY",
-        message: "Supadata API key not configured. Open YouTube Digest Settings.",
-      };
-    }
+async function fetchBilibiliSubtitleList(aid, cid) {
+  const cookie = await getBilibiliCookieHeader();
+  const signed = await BILI_WBI.signParams({
+    aid: aid,
+    cid: cid,
+    platform: "web",
+    web_location: 1550101,
+  });
+  const url =
+    "https://api.bilibili.com/x/player/wbi/v2?aid=" + aid + "&cid=" + cid +
+    "&platform=web&web_location=1550101&w_rid=" + signed.w_rid + "&wts=" + signed.wts;
+  const headers = {
+    "User-Agent": BILI_UA,
+    Referer: "https://www.bilibili.com/",
+  };
+  if (cookie) headers.Cookie = cookie;
 
-    // Share only the canonical watch URL. This strips playlist, referral,
-    // timestamp, and other browsing parameters from the active tab URL.
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
-    // Using the universal transcript endpoint with text=false to get timestamped chunks
-    const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
-    apiUrl.searchParams.set("url", canonicalVideoUrl);
-    apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
-    apiUrl.searchParams.set("lang", "en"); // Prefer English
-    // Caption-only product scope: never fall back to paid AI transcription.
-    apiUrl.searchParams.set("mode", "native");
+  const res = await fetch(url, { headers: headers });
+  if (res.status === 412) return { error: "RATE_LIMITED" };
+  const json = await res.json().catch(function () { return {}; });
+  if (json.code === -412) return { error: "RATE_LIMITED" };
+  if (json.code !== 0) {
+    return { error: "PLAYER_FAILED", message: json.message || "player request error" };
+  }
+  const subtitle = json.data ? json.data.subtitle : null;
+  return { subtitles: (subtitle && subtitle.subtitles) || [], hasCookie: !!cookie };
+}
 
-    // Make the API request
-    const response = await fetch(apiUrl.toString(), {
-      method: "GET",
-      headers: {
-        "x-api-key": settings.supadataApiKey,
-      },
+/**
+ * Pick the best track: CC Chinese > AI Chinese > foreign CC (needs translation).
+ * Bilibili AI tracks use `lan` like "ai-zh"; manual CC use "zh-CN"/"zh-Hans"/"en".
+ */
+function pickSubtitleTrack(subtitles) {
+  const isZh = function (lan) {
+    return ["zh-CN", "zh-Hans", "zh-Hant", "zh"].includes(lan);
+  };
+
+  const ccZh = subtitles.find(function (s) { return isZh(s.lan); });
+  if (ccZh) return { track: ccZh, needsTranslation: false, isAi: false };
+
+  const aiZh = subtitles.find(function (s) { return s.lan === "ai-zh"; });
+  if (aiZh) return { track: aiZh, needsTranslation: false, isAi: true };
+
+  const foreign = subtitles.find(function (s) { return !s.lan.startsWith("ai-") && !isZh(s.lan); });
+  if (foreign) return { track: foreign, needsTranslation: true, isAi: false };
+
+  const aiOther = subtitles.find(function (s) { return s.lan.startsWith("ai-"); });
+  if (aiOther) return { track: aiOther, needsTranslation: true, isAi: true };
+
+  return null;
+}
+
+/** Download and parse a bilibili subtitle JSON (CDN, no auth). */
+async function fetchBilibiliSubtitleJson(subtitleUrl) {
+  const fullUrl = subtitleUrl.startsWith("//") ? "https:" + subtitleUrl : subtitleUrl;
+  const res = await fetch(fullUrl, {
+    headers: { "User-Agent": BILI_UA, Referer: "https://www.bilibili.com/" },
+  });
+  if (!res.ok) throw new Error("subtitle fetch failed: " + res.status);
+  return res.json();
+}
+
+/** Normalize bilibili subtitle body[] into the shared transcript format. */
+function normalizeBilibiliSubtitle(json, language, needsTranslation) {
+  const body = Array.isArray(json && json.body) ? json.body : [];
+  const transcript = [];
+  let plain = "";
+  let timestamped = "";
+
+  for (const item of body) {
+    const text = String(item.content || "").trim();
+    if (!text) continue;
+    const start = Math.max(0, Math.floor(Number(item.from) || 0));
+    const end = Math.max(start, Math.floor(Number(item.to) || start));
+    const duration = end - start;
+    const minutes = Math.floor(start / 60);
+    const seconds = start % 60;
+    const ts = minutes + ":" + String(seconds).padStart(2, "0");
+
+    transcript.push({
+      text: text,
+      start: start,
+      duration: duration,
+      language: language,
+      needsTranslation: !!needsTranslation,
     });
+    plain += text + " ";
+    timestamped += "[" + ts + "] " + text + "\n";
+  }
 
-    // Handle async jobs (for videos > 20 minutes, Supadata returns a job ID)
-    if (response.status === 202) {
-      const jobData = await response.json();
-      // Poll for the result
-      return await pollTranscriptJob(jobData.jobId, settings.supadataApiKey);
-    }
+  return {
+    transcript: transcript,
+    transcriptText: plain.trim(),
+    transcriptTextTimestamped: timestamped.trim(),
+  };
+}
 
-    if (response.status === 206) {
+/**
+ * Fetch subtitles for a bilibili video (bvid) using the official API chain:
+ * view -> wbi/v2 (signed, cookie) -> subtitle CDN JSON.
+ *
+ * @param {string} bvid - e.g. "BV1Fg411D7Jy"
+ * @returns {Object} - { success, transcript, transcriptText, ... } or { success:false, error }
+ */
+async function handleFetchTranscript(bvid) {
+  try {
+    const view = await fetchBilibiliView(bvid);
+    if (view.error) {
       return {
         success: false,
-        error: "NO_TRANSCRIPT",
-        message: "No native subtitle track is available for this video.",
+        error: view.error,
+        message: view.message || "Failed to load video info.",
       };
     }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        return {
-          success: false,
-          error: "INVALID_SUPADATA_KEY",
-          message: "Your Supadata API key is invalid. Open YouTube Digest Settings.",
-        };
-      }
-      if (response.status === 404) {
-        return {
-          success: false,
-          error: "NO_TRANSCRIPT",
-          message: "No subtitles found for this video.",
-        };
-      }
-      if (response.status === 429) {
-        return {
-          success: false,
-          error: "RATE_LIMITED",
-          message:
-            "Supadata rate limit reached. Please wait a minute and try again.",
-        };
-      }
-      throw new Error(
-        errorData.message || `Supadata API error: ${response.status}`,
-      );
+    const list = await fetchBilibiliSubtitleList(view.aid, view.cid);
+    if (list.error === "RATE_LIMITED") {
+      return {
+        success: false,
+        error: "RATE_LIMITED",
+        message: "Bilibili rate limit reached. Please wait a moment and try again.",
+      };
+    }
+    if (list.error) {
+      return {
+        success: false,
+        error: list.error,
+        message: list.message || "Failed to load subtitle list.",
+      };
     }
 
-    const data = await response.json();
-
-    // Parse the response into our internal format
-    // Supadata returns: { content: [{ text, offset, duration, lang }], lang, availableLangs }
-    const transcript = [];
-    let transcriptTextPlain = ""; // Plain text for display/export
-    let transcriptTextTimestamped = ""; // Timestamped text for AI analysis
-
-    if (data.content && Array.isArray(data.content)) {
-      for (const chunk of data.content) {
-        if (chunk.text) {
-          // Clean up caption artifacts:
-          // ">>" = speaker change marker from YouTube auto-captions
-          const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-          if (!cleanText) continue; // Skip if nothing left after cleanup
-
-          // offset is in milliseconds, convert to seconds
-          const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-          const minutes = Math.floor(startSeconds / 60);
-          const seconds = startSeconds % 60;
-          const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-          transcript.push({
-            text: cleanText,
-            start: startSeconds,
-            duration: Math.floor((chunk.duration || 0) / 1000),
-            language: chunk.lang || data.lang || null,
-          });
-
-          // Plain text without timestamps (for display/export)
-          transcriptTextPlain += cleanText + " ";
-
-          // Timestamped text for DeepSeek (format: [MM:SS] text)
-          // This allows the model to reference actual transcript positions.
-          transcriptTextTimestamped += `[${timestamp}] ${cleanText}\n`;
-        }
-      }
+    const picked = pickSubtitleTrack(list.subtitles);
+    if (!picked) {
+      return {
+        success: false,
+        error: list.hasCookie ? "NO_SUBTITLE" : "NOT_LOGGED_IN",
+        message: list.hasCookie
+          ? "This video has no Chinese subtitles."
+          : "Please log in to bilibili to access subtitles.",
+      };
     }
 
-    if (transcript.length === 0) {
+    const json = await fetchBilibiliSubtitleJson(picked.track.subtitle_url);
+    const norm = normalizeBilibiliSubtitle(json, picked.track.lan, picked.needsTranslation);
+
+    if (norm.transcript.length === 0) {
       return {
         success: false,
         error: "EMPTY_TRANSCRIPT",
-        message: "Supadata returned an empty transcript for this video.",
+        message: "The subtitle track is empty for this video.",
       };
     }
 
     return {
       success: true,
-      transcript: transcript,
-      transcriptText: transcriptTextPlain.trim(), // For display
-      transcriptTextTimestamped: transcriptTextTimestamped.trim(), // For AI
-      language: typeof data.lang === "string" ? data.lang : null,
+      transcript: norm.transcript,
+      transcriptText: norm.transcriptText,
+      transcriptTextTimestamped: norm.transcriptTextTimestamped,
+      language: picked.track.lan || null,
+      needsTranslation: picked.needsTranslation,
+      isAiSubtitle: picked.isAi,
     };
   } catch (error) {
     console.error("Transcript fetch error:", error);
@@ -776,82 +781,6 @@ async function handleFetchTranscript(videoId) {
   }
 }
 
-/**
- * Polls for transcript job completion (for long videos).
- * Supadata processes videos > 20 minutes asynchronously.
- *
- * @param {string} jobId - The job ID returned by the initial request
- * @returns {Object} - Same format as handleFetchTranscript
- */
-async function pollTranscriptJob(jobId, supadataApiKey) {
-  const maxAttempts = 60; // Max 60 seconds of polling
-  const pollInterval = 1000; // Poll every 1 second
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // Wait before polling
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-
-    const response = await fetch(
-      `https://api.supadata.ai/v1/transcript/${encodeURIComponent(jobId)}`,
-      {
-        headers: { "x-api-key": supadataApiKey },
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error(`Job polling failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (data.status === "completed") {
-      // Parse the completed transcript
-      const transcript = [];
-      let transcriptTextPlain = "";
-      let transcriptTextTimestamped = "";
-
-      if (data.content && Array.isArray(data.content)) {
-        for (const chunk of data.content) {
-          if (chunk.text) {
-            // Clean up caption artifacts (">>" = speaker change marker)
-            const cleanText = chunk.text.replace(/>> ?/g, "").trim();
-            if (!cleanText) continue;
-
-            const startSeconds = Math.floor((chunk.offset || 0) / 1000);
-            const minutes = Math.floor(startSeconds / 60);
-            const seconds = startSeconds % 60;
-            const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-            transcript.push({
-              text: cleanText,
-              start: startSeconds,
-              duration: Math.floor((chunk.duration || 0) / 1000),
-              language: chunk.lang || data.lang || null,
-            });
-            transcriptTextPlain += cleanText + " ";
-            transcriptTextTimestamped += `[${timestamp}] ${chunk.text}\n`;
-          }
-        }
-      }
-
-      return {
-        success: true,
-        transcript: transcript,
-        transcriptText: transcriptTextPlain.trim(),
-        transcriptTextTimestamped: transcriptTextTimestamped.trim(),
-        language: typeof data.lang === "string" ? data.lang : null,
-      };
-    }
-
-    if (data.status === "failed") {
-      throw new Error("Transcript processing failed");
-    }
-
-    // Status is 'queued' or 'active' — keep polling
-  }
-
-  throw new Error("Transcript processing timed out");
-}
 
 // ============================================================
 // JSON HELPER
@@ -921,7 +850,7 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured. Open YouTube Digest Settings.",
+        message: "DeepSeek API key not configured. Open Bilibili Digest Settings.",
       };
     }
 
@@ -975,7 +904,7 @@ async function handleAnalyzeTranscript(
       promptVariables,
     );
 
-    debugLog("[YouTube Digest] Requesting video analysis", settings.aiModel);
+    debugLog("[Bilibili Digest] Requesting video analysis", settings.aiModel);
     const { text: responseText } = await requestAiCompletion({
       maxTokens: 8192,
       responseFormat: { type: "json_object" },
@@ -1098,7 +1027,7 @@ function validateAndFixTimestamps(analysis, maxSeconds) {
 // ============================================================
 
 /**
- * Gets video info (title, channel, description) from the active YouTube tab.
+ * Gets video info (title, channel, description) from the active bilibili tab.
  * We do this by asking the content script to read the page.
  */
 async function handleGetVideoInfo(tabId) {
@@ -1141,7 +1070,7 @@ async function handleSaveNote(
   selectedText,
 ) {
   try {
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
+    const canonicalVideoUrl = BILI_PLATFORM.canonicalBilibiliUrl(videoId);
     const safeTimestamp = Math.max(0, Math.floor(Number(timestamp) || 0));
     const exactSelectedText =
       typeof selectedText === "string"
@@ -1164,7 +1093,7 @@ async function handleSaveNote(
           typeof channelName === "string" ? channelName.slice(0, 300) : "",
         timestamp: `${minutes}:${String(seconds).padStart(2, "0")}`,
         timestampSeconds: safeTimestamp,
-        timestampedUrl: `${canonicalVideoUrl}&t=${safeTimestamp}s`,
+        timestampedUrl: `${canonicalVideoUrl}?t=${safeTimestamp}`,
         text: exactSelectedText,
         rawText: exactSelectedText,
         createdAt: Date.now(),
@@ -1178,16 +1107,16 @@ async function handleSaveNote(
     // First, try to get the transcript from the digest cache. The side panel
     // saves digests to chrome.storage.LOCAL — this used to look in
     // storage.session (the wrong store), so it missed every time and
-    // refetched the transcript from Supadata on every saved note.
+    // refetched the transcript from bilibili on every saved note.
     let transcript = null;
     try {
       const cached = await chrome.storage.local.get(`digest_${videoId}`);
       if (cached[`digest_${videoId}`]?.transcript) {
         transcript = cached[`digest_${videoId}`].transcript;
-        debugLog("[YouTube Digest] Using cached transcript for note");
+        debugLog("[Bilibili Digest] Using cached transcript for note");
       }
     } catch (e) {
-      debugLog("[YouTube Digest] No cached transcript, fetching...");
+      debugLog("[Bilibili Digest] No cached transcript, fetching...");
     }
 
     // If no cached transcript, fetch it
@@ -1280,7 +1209,7 @@ async function handleSaveNote(
     const formattedTimestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
 
     // Create timestamped URL
-    const timestampedUrl = `${canonicalVideoUrl}&t=${safeTimestamp}s`;
+    const timestampedUrl = `${canonicalVideoUrl}?t=${safeTimestamp}`;
 
     // Create the note object
     const note = {
@@ -1308,7 +1237,7 @@ async function handleSaveNote(
 
     return { success: true, note };
   } catch (error) {
-    console.error("[YouTube Digest] Save note error:", error);
+    console.error("[Bilibili Digest] Save note error:", error);
     return { success: false, error: error.message };
   }
 }
@@ -1331,7 +1260,7 @@ async function cleanupNoteText(
   }
 
   try {
-    debugLog("[YouTube Digest] Requesting note cleanup");
+    debugLog("[Bilibili Digest] Requesting note cleanup");
     const variables = {
       videoTitle: videoTitle || "Unknown",
       fullContext,
@@ -1368,7 +1297,7 @@ async function cleanupNoteText(
       }
     } catch (parseError) {
       console.warn(
-        "[YouTube Digest] JSON parse failed for note, stripping preambles:",
+        "[Bilibili Digest] JSON parse failed for note, stripping preambles:",
         parseError,
       );
       result = result.replace(
@@ -1386,7 +1315,7 @@ async function cleanupNoteText(
 
     return result.slice(0, 3000);
   } catch (e) {
-    console.error("[YouTube Digest] Cleanup error:", e);
+    console.error("[Bilibili Digest] Cleanup error:", e);
   }
 
   // Return combined raw text if cleanup fails
@@ -1473,7 +1402,7 @@ async function handleExplainSelection(
       variables,
     );
 
-    debugLog("[YouTube Digest] Requesting selection explanation");
+    debugLog("[Bilibili Digest] Requesting selection explanation");
     const { text: explanation } = await requestAiCompletion({
       maxTokens: 1024,
       messages: [
@@ -1672,7 +1601,7 @@ async function handleTranslateContent(
     }
     return { success: true, translatedContent: aligned };
   } catch (error) {
-    console.error("[YouTube Digest] Translation error:", error);
+    console.error("[Bilibili Digest] Translation error:", error);
     return { success: false, error: error.message || "Translation failed" };
   }
 }

@@ -4,6 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+const platformScript = fs.readFileSync(
+  path.resolve(__dirname, "..", "platform.js"),
+  "utf8",
+);
 const contentScript = fs.readFileSync(
   path.resolve(__dirname, "..", "content.js"),
   "utf8",
@@ -12,16 +16,14 @@ const contentScript = fs.readFileSync(
 class FakeElement {
   constructor({
     id = "",
+    cls = "",
     width = 100,
     height = 36,
-    inMetadata = false,
-    inPrimary = false,
   } = {}) {
     this.id = id;
+    this.cls = cls;
     this.width = width;
     this.height = height;
-    this.inMetadata = inMetadata;
-    this.inPrimary = inPrimary;
     this.isConnected = true;
     this.parentElement = null;
     this.children = [];
@@ -37,25 +39,34 @@ class FakeElement {
     return { width: this.width, height: this.height };
   }
 
-  closest(selector) {
-    if (selector === "ytd-watch-metadata" && this.inMetadata) return this;
-    if (selector === "#primary" && this.inPrimary) return this;
+  matches(selector) {
+    const parts = String(selector)
+      .split(",")
+      .map((part) => part.trim());
+    return parts.some((part) => {
+      if (part.startsWith("#")) return this.id === part.slice(1);
+      if (part.startsWith(".")) {
+        return this.cls.split(/\s+/).includes(part.slice(1));
+      }
+      return false;
+    });
+  }
+
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matches(selector)) return child;
+      const found = child.querySelector(selector);
+      if (found) return found;
+    }
     return null;
   }
 
   querySelectorAll(selector) {
     const matches = [];
-
     for (const child of this.children) {
-      if (
-        selector === "#top-level-buttons-computed" &&
-        child.id === selector.slice(1)
-      ) {
-        matches.push(child);
-      }
+      if (child.matches(selector)) matches.push(child);
       matches.push(...child.querySelectorAll(selector));
     }
-
     return matches;
   }
 
@@ -97,10 +108,8 @@ class FakeElement {
 }
 
 function createHarness() {
-  const actionRows = [];
-  const fallbackRows = [];
+  const toolbars = [];
   const elements = [];
-  const documentListeners = {};
   const windowListeners = {};
   const observers = [];
   const timers = new Map();
@@ -109,17 +118,14 @@ function createHarness() {
   const document = {
     readyState: "loading",
     body: new FakeElement(),
-    addEventListener(type, listener) {
-      documentListeners[type] = listener;
-    },
+    addEventListener() {},
     querySelectorAll(selector) {
-      if (selector === "ytd-watch-metadata #actions-inner") return actionRows;
-      if (selector === "#ytd-digest-button") {
+      if (selector === ".video-toolbar") return toolbars;
+      if (selector === "#bili-digest-button") {
         return elements.filter(
-          (element) => element.id === "ytd-digest-button" && element.isConnected,
+          (element) => element.id === "bili-digest-button" && element.isConnected,
         );
       }
-      if (selector.includes("top-level-buttons-computed")) return fallbackRows;
       return [];
     },
     querySelector() {
@@ -139,7 +145,7 @@ function createHarness() {
     console,
     document,
     window: {
-      location: { pathname: "/watch" },
+      location: { href: "https://www.bilibili.com/video/BV1Fg411D7Jy" },
       addEventListener(type, listener) {
         windowListeners[type] = listener;
       },
@@ -147,6 +153,7 @@ function createHarness() {
         return {
           display: element.display || "flex",
           visibility: element.visibility || "visible",
+          position: element.position || "relative",
         };
       },
     },
@@ -179,14 +186,13 @@ function createHarness() {
     clearInterval() {},
   });
 
+  vm.runInContext(platformScript, context);
   vm.runInContext(contentScript, context);
 
   return {
     context,
-    actionRows,
-    fallbackRows,
+    toolbars,
     elements,
-    documentListeners,
     windowListeners,
     observers,
     flushTimers() {
@@ -197,139 +203,96 @@ function createHarness() {
   };
 }
 
-function createActionRow({ width, height }) {
-  const row = new FakeElement({
-    id: "actions-inner",
-    width,
-    height,
-    inMetadata: true,
-    inPrimary: true,
-  });
-  const buttonGroup = new FakeElement({
-    id: "top-level-buttons-computed",
-    width,
-    height,
-    inMetadata: true,
-    inPrimary: true,
-  });
-  row.appendChild(buttonGroup);
-  return { row, buttonGroup };
+function createToolbar({ width, height }) {
+  const toolbar = new FakeElement({ cls: "video-toolbar", width, height });
+  const right = new FakeElement({ cls: "toolbar-right", width, height });
+  toolbar.appendChild(right);
+  return { toolbar, right };
 }
 
 test("Digest button skips a hidden responsive toolbar", () => {
   const harness = createHarness();
-  const { row: hiddenRow, buttonGroup: hiddenGroup } = createActionRow({
-    width: 0,
-    height: 0,
-  });
-  const { row: visibleRow, buttonGroup: visibleGroup } = createActionRow({
-    width: 389,
-    height: 36,
-  });
-  const nativeButton = new FakeElement();
-  visibleGroup.appendChild(nativeButton);
-  harness.actionRows.push(hiddenRow, visibleRow);
+  const hidden = createToolbar({ width: 0, height: 0 });
+  const visible = createToolbar({ width: 389, height: 36 });
+  harness.toolbars.push(hidden.toolbar, visible.toolbar);
 
-  assert.equal(harness.context.findDigestButtonHost(), visibleGroup);
+  assert.equal(harness.context.findDigestButtonHost(), visible.right);
   assert.equal(harness.context.injectDigestButton(), true);
-  assert.equal(hiddenGroup.children.length, 0);
-  assert.equal(visibleRow.children.length, 1);
-  assert.equal(visibleGroup.children[0].id, "ytd-digest-button");
-  assert.equal(visibleGroup.children[1], nativeButton);
-  assert.match(visibleGroup.children[0].style.cssText, /flex:\s*0 0 auto/);
-  assert.match(visibleGroup.children[0].style.cssText, /width:\s*max-content/);
-  assert.doesNotMatch(visibleGroup.children[0].style.cssText, /box-shadow/);
+  assert.equal(hidden.right.children.length, 0);
+  assert.equal(visible.right.children.length, 1);
+  assert.equal(visible.right.children[0].id, "bili-digest-button");
+  assert.match(visible.right.children[0].style.cssText, /background:\s*#00a1d6/);
 });
 
 test("Digest button replaces stale instances and removes duplicates", () => {
   const harness = createHarness();
-  const { row: staleRow, buttonGroup: staleGroup } = createActionRow({
-    width: 0,
-    height: 0,
-  });
-  const { row: visibleRow, buttonGroup: visibleGroup } = createActionRow({
-    width: 500,
-    height: 36,
-  });
-  harness.actionRows.push(staleRow, visibleRow);
+  const stale = createToolbar({ width: 0, height: 0 });
+  const visible = createToolbar({ width: 500, height: 36 });
+  harness.toolbars.push(stale.toolbar, visible.toolbar);
 
   const staleButton = new FakeElement();
-  staleButton.id = "ytd-digest-button";
+  staleButton.id = "bili-digest-button";
   const duplicateButton = new FakeElement();
-  duplicateButton.id = "ytd-digest-button";
+  duplicateButton.id = "bili-digest-button";
   harness.elements.push(staleButton, duplicateButton);
-  staleGroup.appendChild(staleButton);
-  staleGroup.appendChild(duplicateButton);
+  stale.right.appendChild(staleButton);
+  stale.right.appendChild(duplicateButton);
 
   assert.equal(harness.context.injectDigestButton(), true);
-  assert.equal(staleGroup.children.length, 0);
-  assert.equal(visibleRow.children.length, 1);
-  assert.equal(visibleGroup.children.length, 1);
-  assert.notEqual(visibleGroup.children[0], staleButton);
-  assert.equal(visibleGroup.children[0].id, "ytd-digest-button");
+  assert.equal(stale.right.children.length, 0);
+  assert.equal(visible.right.children.length, 1);
+  assert.notEqual(visible.right.children[0], staleButton);
+  assert.equal(visible.right.children[0].id, "bili-digest-button");
   assert.equal(staleButton.isConnected, false);
   assert.equal(duplicateButton.isConnected, false);
 });
 
-test("resize reconciliation follows YouTube to the newly visible toolbar", () => {
+test("resize reconciliation follows the newly visible toolbar", () => {
   const harness = createHarness();
-  const { row: firstRow, buttonGroup: firstGroup } = createActionRow({
-    width: 500,
-    height: 36,
-  });
-  const { row: secondRow, buttonGroup: secondGroup } = createActionRow({
-    width: 0,
-    height: 0,
-  });
-  harness.actionRows.push(firstRow, secondRow);
+  const first = createToolbar({ width: 500, height: 36 });
+  const second = createToolbar({ width: 0, height: 0 });
+  harness.toolbars.push(first.toolbar, second.toolbar);
 
   harness.context.injectDigestButton();
   harness.context.setupDigestButtonResizeListener();
-  firstRow.width = 0;
-  firstRow.height = 0;
-  firstGroup.width = 0;
-  firstGroup.height = 0;
-  secondRow.width = 389;
-  secondRow.height = 36;
-  secondGroup.width = 389;
-  secondGroup.height = 36;
+  first.toolbar.width = 0;
+  first.toolbar.height = 0;
+  first.right.width = 0;
+  first.right.height = 0;
+  second.toolbar.width = 389;
+  second.toolbar.height = 36;
+  second.right.width = 389;
+  second.right.height = 36;
 
   harness.windowListeners.resize();
   harness.flushTimers();
 
-  assert.equal(firstGroup.children.length, 0);
-  assert.equal(secondRow.children.length, 1);
-  assert.equal(secondGroup.children.length, 1);
-  assert.equal(secondGroup.children[0].id, "ytd-digest-button");
+  assert.equal(first.right.children.length, 0);
+  assert.equal(second.right.children.length, 1);
+  assert.equal(second.right.children[0].id, "bili-digest-button");
 });
 
 test("DOM mutation reconciliation repairs a replaced toolbar", () => {
   const harness = createHarness();
-  const { row: oldRow, buttonGroup: oldGroup } = createActionRow({
-    width: 500,
-    height: 36,
-  });
-  const { row: newRow, buttonGroup: newGroup } = createActionRow({
-    width: 0,
-    height: 0,
-  });
-  harness.actionRows.push(oldRow, newRow);
+  const old = createToolbar({ width: 500, height: 36 });
+  const fresh = createToolbar({ width: 0, height: 0 });
+  harness.toolbars.push(old.toolbar, fresh.toolbar);
 
   harness.context.injectDigestButton();
   harness.context.setupButtonObserver();
-  oldRow.width = 0;
-  oldRow.height = 0;
-  oldGroup.width = 0;
-  oldGroup.height = 0;
-  newRow.width = 500;
-  newRow.height = 36;
-  newGroup.width = 500;
-  newGroup.height = 36;
+  old.toolbar.width = 0;
+  old.toolbar.height = 0;
+  old.right.width = 0;
+  old.right.height = 0;
+  fresh.toolbar.width = 500;
+  fresh.toolbar.height = 36;
+  fresh.right.width = 500;
+  fresh.right.height = 36;
 
   harness.observers[0].callback([]);
   harness.flushTimers();
 
-  assert.equal(oldGroup.children.length, 0);
-  assert.equal(newRow.children.length, 1);
-  assert.equal(newGroup.children.length, 1);
+  assert.equal(old.right.children.length, 0);
+  assert.equal(fresh.right.children.length, 1);
+  assert.equal(fresh.right.children[0].id, "bili-digest-button");
 });

@@ -125,14 +125,14 @@ test("the first non-YouTube navigation is checked again after commit", () => {
   );
 });
 
-test("the panel never borrows a background YouTube tab", () => {
+test("the panel never borrows a background bilibili tab", () => {
   assert.match(
     source,
     /const tabs = await chrome\.tabs\.query\(\{\s*active: true,\s*lastFocusedWindow: true,\s*\}\);/,
   );
   assert.match(
     source,
-    /if \(!tab\.url\.startsWith\("https:\/\/www\.youtube\.com"\)\) \{\s*handleFrontTabUrl\(tab\.url\);\s*return;/,
+    /if \(!BILI_PLATFORM\.isBilibiliVideoPage\(tab\.url\)\) \{\s*handleFrontTabUrl\(tab\.url\);\s*return;/,
   );
   assert.doesNotMatch(
     source,
