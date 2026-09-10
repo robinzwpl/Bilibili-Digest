@@ -78,6 +78,26 @@ describe("BILI_PLATFORM helpers", () => {
     });
   });
 
+  it("builds a pageId from a bvid and page number", () => {
+    assert.equal(platform.buildPageId("BV1Fg411D7Jy", 1), "BV1Fg411D7Jy");
+    assert.equal(platform.buildPageId("BV1Fg411D7Jy", 2), "BV1Fg411D7Jy_p2");
+    assert.equal(platform.buildPageId("BV1Fg411D7Jy", 0), "BV1Fg411D7Jy");
+    assert.equal(platform.buildPageId("BV1Fg411D7Jy"), "BV1Fg411D7Jy");
+    assert.equal(platform.buildPageId("", 2), null);
+  });
+
+  it("round-trips pageId through split and build", () => {
+    for (const url of [
+      "https://www.bilibili.com/video/BV1Fg411D7Jy",
+      "https://www.bilibili.com/video/BV1Fg411D7Jy?p=3",
+      "https://www.bilibili.com/video/BV1Fg411D7Jy?p=27",
+    ]) {
+      const pageId = platform.extractPageId(url);
+      const { bvid, page } = platform.splitPageId(pageId);
+      assert.equal(platform.buildPageId(bvid, page), pageId);
+    }
+  });
+
   it("recognises bilibili video pages", () => {
     assert.ok(platform.isBilibiliVideoPage("https://www.bilibili.com/video/BV1Fg411D7Jy"));
     assert.ok(

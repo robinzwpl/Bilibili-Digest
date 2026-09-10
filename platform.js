@@ -43,6 +43,18 @@ var BILI_PLATFORM = (() => {
   }
 
   /**
+   * Build a stable page identifier from a bvid and page number.
+   * Page 1 collapses to the bare bvid so single-part videos keep their
+   * original cache keys.
+   */
+  function buildPageId(bvid, page) {
+    const id = String(bvid || "").trim();
+    if (!id) return null;
+    const p = Number(page) || 1;
+    return p > 1 ? `${id}_p${p}` : id;
+  }
+
+  /**
    * A stable page identifier that includes the playlist page.
    * Same bvid with different ?p values gets different IDs so each part
    * is cached and fetched independently.
@@ -50,8 +62,7 @@ var BILI_PLATFORM = (() => {
   function extractPageId(url) {
     const bvid = extractBvid(url);
     if (!bvid) return null;
-    const page = extractPage(url);
-    return page > 1 ? `${bvid}_p${page}` : bvid;
+    return buildPageId(bvid, extractPage(url));
   }
 
   /**
@@ -110,6 +121,7 @@ var BILI_PLATFORM = (() => {
     extractBvid,
     extractPage,
     extractPageId,
+    buildPageId,
     splitPageId,
     isBilibiliVideoPage,
     canonicalBilibiliUrl,

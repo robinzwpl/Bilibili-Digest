@@ -27,6 +27,8 @@ let currentVideoDescription = "";
 let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
 let bilibiliTabId = null; // Store the bilibili tab ID for reliable messaging
+let videoChangeTimer = null; // Debounces videoChanged events from the content script
+let forceRefreshPending = false; // Set when the content script reports a page change
 let errorAction = null;
 
 // --- Translation state ---
@@ -295,13 +297,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
   if (message.action === "videoChanged") {
-    // The content script detected a URL change (often a different ?p part of
-    // the same bvid). Re-check the active tab so the panel loads the right
-    // transcript instead of showing the previous part from cache.
-    const newPageId = BILI_PLATFORM.extractPageId(message.url || "");
-    if (newPageId && newPageId !== currentVideoId) {
+    // The content script detected a real page change (a different playlist
+    // part, or a different video). It already de-duplicates, so we simply
+    // re-check the tab — the URL may not have caught up yet, which is why we
+    // never compare ids here. Debounced so bursts of events collapse into one.
+    forceRefreshPending = true;
+    if (videoChangeTimer) clearTimeout(videoChangeTimer);
+    videoChangeTimer = setTimeout(() => {
+      videoChangeTimer = null;
       checkCurrentTab();
-    }
+    }, 350);
     sendResponse({ success: true });
   }
   return false;
@@ -510,7 +515,27 @@ async function checkCurrentTab() {
     // Store the tab ID for reliable messaging later
     bilibiliTabId = tab.id;
 
-    const videoId = extractVideoId(tab.url);
+    // Ask the page what is ACTUALLY playing. Playlist parts share a bvid, and
+    // bilibili may update the URL late (or not at all), so the player's own
+    // page number is the only reliable identity.
+    let liveInfo = null;
+    try {
+      const playInfo = await chrome.runtime.sendMessage({
+        action: "getPlayInfo",
+        tabId: tab.id,
+      });
+      if (playInfo && playInfo.success) liveInfo = playInfo.info;
+    } catch (e) {
+      debugLog("[Bilibili Digest Panel] getPlayInfo failed:", e);
+    }
+
+    const bvid =
+      BILI_PLATFORM.extractBvid(tab.url) || (liveInfo && liveInfo.bvid) || null;
+    const realPage =
+      (liveInfo && Number(liveInfo.page)) ||
+      BILI_PLATFORM.extractPage(tab.url) ||
+      1;
+    const videoId = bvid ? BILI_PLATFORM.buildPageId(bvid, realPage) : null;
 
     if (videoId) {
       currentVideoUrl = tab.url;
@@ -555,8 +580,13 @@ function extractVideoId(url) {
 // ============================================================
 
 async function startDigest(videoId, videoUrl) {
-  // Check if we already have this video loaded in memory
-  if (videoId === currentVideoId && currentAnalysis) {
+  const forced = forceRefreshPending;
+  forceRefreshPending = false;
+
+  // Check if we already have this video loaded in memory. A forced refresh
+  // (a playlist part switch reported by the content script) skips this short
+  // circuit so the panel can never stay stuck on a stale part.
+  if (!forced && videoId === currentVideoId && currentAnalysis) {
     showState("results");
     return;
   }
@@ -659,6 +689,7 @@ async function startDigest(videoId, videoUrl) {
   const transcriptResult = await chrome.runtime.sendMessage({
     action: "fetchTranscript",
     videoId: videoId,
+    tabId: bilibiliTabId,
   });
 
   if (!transcriptResult.success) {

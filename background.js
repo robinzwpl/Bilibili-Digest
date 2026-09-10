@@ -352,10 +352,19 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
-    handleFetchTranscript(message.videoId)
+    handleFetchTranscript(message.videoId, message.tabId)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }));
     return true; // Keep the message channel open for async response
+  }
+
+  if (message.action === "getPlayInfo") {
+    // Live page identity (bvid/aid/cid/page) read from the player. Used by the
+    // side panel to tell playlist parts apart when the URL lags behind.
+    readPlayInfoFromTab(message.tabId)
+      .then((info) => sendResponse({ success: !!info, info: info }))
+      .catch(() => sendResponse({ success: false, info: null }));
+    return true;
   }
 
   if (message.action === "analyzeTranscript") {
@@ -584,6 +593,71 @@ async function getBilibiliCookieHeader() {
 }
 
 /**
+ * Read the *currently playing* video identity from the page's MAIN world.
+ *
+ * Bilibili is an SPA: switching a playlist part can update the URL
+ * asynchronously, or not at all. The player instance and the video element
+ * always know the real cid, so they are the authoritative source — not the URL.
+ *
+ * Runs in the MAIN world so it can touch the page's own `window.player` and
+ * `window.__INITIAL_STATE__`. This function must stay self-contained: it is
+ * serialized and executed in the page, so it cannot close over outer vars.
+ */
+async function readPlayInfoFromTab(tabId) {
+  if (!tabId) return null;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "MAIN",
+      func: () => {
+        const out = { bvid: null, aid: null, cid: null, page: null };
+
+        // 1. The player instance is the most accurate source.
+        try {
+          const player = window.player;
+          if (player && typeof player.getVideoMessage === "function") {
+            const msg = player.getVideoMessage();
+            if (msg) {
+              if (msg.aid) out.aid = Number(msg.aid);
+              if (msg.cid) out.cid = Number(msg.cid);
+              if (msg.p) out.page = Number(msg.p);
+              if (msg.bvid) out.bvid = String(msg.bvid);
+            }
+          }
+        } catch (_) {}
+
+        // 2. Page state gives us aid/bvid even when the player isn't ready.
+        try {
+          const state = window.__INITIAL_STATE__;
+          const vd = state && state.videoData;
+          if (vd) {
+            if (!out.aid && vd.aid) out.aid = Number(vd.aid);
+            if (!out.bvid && vd.bvid) out.bvid = String(vd.bvid);
+          }
+        } catch (_) {}
+
+        // 3. Last resort: bilibili CDN URLs embed the cid as a path segment.
+        try {
+          const video = document.querySelector("video");
+          const src = (video && (video.currentSrc || video.src)) || "";
+          if (src && !out.cid) {
+            const m = src.match(/\/(\d{6,})\//);
+            if (m) out.cid = Number(m[1]);
+          }
+        } catch (_) {}
+
+        return out.cid || out.aid ? out : null;
+      },
+    });
+    const result = results && results[0] && results[0].result;
+    return result || null;
+  } catch (e) {
+    debugLog("[Bilibili Digest BG] readPlayInfoFromTab failed:", e && e.message);
+    return null;
+  }
+}
+
+/**
  * Fetch bilibili video metadata (aid/cid) for a bvid via the view endpoint.
  * Returns { aid, cid, title, ownerName } or { error }.
  */
@@ -710,28 +784,54 @@ function normalizeBilibiliSubtitle(json, language, needsTranslation) {
 }
 
 /**
- * Fetch subtitles for a bilibili video (pageId) using the official API chain:
+ * Fetch subtitles for a bilibili video using the official API chain:
  * view -> wbi/v2 (signed, cookie) -> subtitle CDN JSON.
  *
+ * The cid is read from the live page first (playlist parts share a bvid, so
+ * the URL/page id alone cannot tell them apart); the view endpoint is the
+ * fallback when the page isn't reachable.
+ *
  * @param {string} pageId - e.g. "BV1Fg411D7Jy" or "BV1Fg411D7Jy_p2"
+ * @param {number} [tabId] - active tab, used to read the live cid
  * @returns {Object} - { success, transcript, transcriptText, ... } or { success:false, error }
  */
-async function handleFetchTranscript(pageId) {
-  const { bvid, page } = BILI_PLATFORM.splitPageId(pageId);
-  if (!bvid) {
-    return { success: false, error: "INVALID_ID", message: "Invalid bilibili video ID." };
-  }
+async function handleFetchTranscript(pageId, tabId) {
+  const split = BILI_PLATFORM.splitPageId(pageId);
+  const bvid = split.bvid;
+  const page = split.page;
+
   try {
-    const view = await fetchBilibiliView(bvid, page);
-    if (view.error) {
-      return {
-        success: false,
-        error: view.error,
-        message: view.message || "Failed to load video info.",
-      };
+    // Prefer the page's live cid — it is the only value that reliably tracks
+    // playlist part switches.
+    let aid = null;
+    let cid = null;
+    const live = await readPlayInfoFromTab(tabId);
+    if (live && live.cid) {
+      aid = live.aid;
+      cid = live.cid;
     }
 
-    const list = await fetchBilibiliSubtitleList(view.aid, view.cid);
+    if (!cid) {
+      if (!bvid) {
+        return {
+          success: false,
+          error: "INVALID_ID",
+          message: "Invalid bilibili video ID.",
+        };
+      }
+      const view = await fetchBilibiliView(bvid, page);
+      if (view.error) {
+        return {
+          success: false,
+          error: view.error,
+          message: view.message || "Failed to load video info.",
+        };
+      }
+      aid = view.aid;
+      cid = view.cid;
+    }
+
+    const list = await fetchBilibiliSubtitleList(aid, cid);
     if (list.error === "RATE_LIMITED") {
       return {
         success: false,
@@ -777,6 +877,8 @@ async function handleFetchTranscript(pageId) {
       language: picked.track.lan || null,
       needsTranslation: picked.needsTranslation,
       isAiSubtitle: picked.isAi,
+      cid: cid,
+      aid: aid,
     };
   } catch (error) {
     console.error("Transcript fetch error:", error);
@@ -1659,4 +1761,8 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleTranslateContent,
   closePanelForTab,
   updatePanelForTab,
+  handleFetchTranscript,
+  readPlayInfoFromTab,
+  pickSubtitleTrack,
+  normalizeBilibiliSubtitle,
 };

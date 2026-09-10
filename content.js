@@ -32,7 +32,7 @@ let digestButton = null;
 let digestButtonObserver = null;
 let digestButtonReconcileTimer = null;
 let digestButtonResizeListenerAdded = false;
-let lastUrl = null;
+let lastSignature = null;
 
 // ============================================================
 // INITIALIZATION
@@ -52,7 +52,7 @@ function init() {
     noteKeyboardListenerAdded = true;
   }
 
-  lastUrl = window.location.href;
+  lastSignature = currentSignature();
   injectDigestButton();
   tryInjectNoteButton();
   setupButtonObserver();
@@ -629,16 +629,45 @@ function escapeHtml(text) {
 // ============================================================
 
 /**
- * Bilibili is an SPA. We detect video changes by watching the full URL
- * (including the ?p=N playlist page) via history events + a light polling
- * fallback, then reconcile the buttons and notify the side panel.
+ * A compact fingerprint of "which video is playing right now".
+ *
+ * The URL alone is not enough. Playlist parts share a bvid, and both the URL
+ * and the page title can lag behind the actual player. The video CDN path
+ * embeds the cid, so we include it: it changes the instant a different part
+ * starts loading, and stays constant across quality switches.
  */
-function onNavigation() {
+function videoTitleText() {
+  return (
+    document.querySelector("h1.video-title")?.textContent?.trim() ||
+    document.querySelector(".video-info-title")?.textContent?.trim() ||
+    ""
+  );
+}
+
+function currentSignature() {
+  const url = window.location.href;
+  const title = videoTitleText();
+  const video = findVideoElement();
+  const src = video ? video.currentSrc || video.src || "" : "";
+  const cidMatch = String(src).match(/\/(\d{6,})\//);
+  const cid = cidMatch ? cidMatch[1] : "";
+  return `${url}|${title}|${cid}`;
+}
+
+/**
+ * Bilibili is an SPA. We detect the playing video by fingerprint (URL + title
+ * + cid) using several signals — history events, the player's own loadstart,
+ * and a light poll — then reconcile the buttons and notify the side panel.
+ */
+function onNavigation(reason) {
+  const signature = currentSignature();
+  if (signature === lastSignature) return; // nothing actually changed
+  lastSignature = signature;
+
+  debugLog("[Bilibili Digest Content] Navigation detected:", reason);
+
   const url = window.location.href;
   const pageId = BILI_PLATFORM.extractPageId(url);
-
-  if (url === lastUrl) return; // same URL, nothing to do
-  lastUrl = url;
 
   // Clean up stale buttons.
   document.querySelectorAll("#bili-digest-button").forEach((b) => b.remove());
@@ -661,18 +690,13 @@ function onNavigation() {
   const existingToast = document.getElementById("bili-note-toast");
   if (existingToast) existingToast.remove();
 
-  // Notify the side panel that the page (possibly the same bvid, different
-  // playlist part) has changed, so it fetches the correct transcript.
-  if (pageId) {
-    try {
-      chrome.runtime.sendMessage({
-        action: "videoChanged",
-        pageId,
-        url,
-      });
-    } catch (err) {
-      debugLog("[Bilibili Digest Content] videoChanged send failed:", err);
-    }
+  // Notify the side panel so it re-reads the tab and loads the correct part.
+  // We deliberately do NOT send pageId for the panel to compare — it may be
+  // stale — the panel re-derives the identity from the live player instead.
+  try {
+    chrome.runtime.sendMessage({ action: "videoChanged", pageId, url });
+  } catch (err) {
+    debugLog("[Bilibili Digest Content] videoChanged send failed:", err);
   }
 
   setTimeout(() => {
@@ -682,17 +706,33 @@ function onNavigation() {
 }
 
 function setupNavigationWatcher() {
-  // Bilibili pushes history state for video navigation.
-  window.addEventListener("popstate", onNavigation);
-  // Catch pushState-driven changes that don't fire popstate.
-  const originalPushState = history.pushState;
-  history.pushState = function (...args) {
-    const result = originalPushState.apply(this, args);
-    setTimeout(onNavigation, 0);
-    return result;
-  };
-  // Light polling fallback in case neither fired.
-  setInterval(() => {
-    if (window.location.href !== lastUrl) onNavigation();
-  }, 1000);
+  window.addEventListener("popstate", () => onNavigation("popstate"));
+
+  // Hook pushState/replaceState. These only cover this isolated world, but
+  // they are free and catch same-world navigations.
+  ["pushState", "replaceState"].forEach((name) => {
+    const original = history[name];
+    if (typeof original !== "function") return;
+    history[name] = function (...args) {
+      const result = original.apply(this, args);
+      setTimeout(() => onNavigation(name), 0);
+      return result;
+    };
+  });
+
+  // The player fires loadstart when it loads a new playlist part's media.
+  // This is the signal that works even when the URL never updates.
+  document.addEventListener(
+    "loadstart",
+    (event) => {
+      const target = event.target;
+      if (target && target.tagName === "VIDEO") {
+        setTimeout(() => onNavigation("video-loadstart"), 200);
+      }
+    },
+    true,
+  );
+
+  // Light poll as the final safety net.
+  setInterval(() => onNavigation("poll"), 400);
 }
