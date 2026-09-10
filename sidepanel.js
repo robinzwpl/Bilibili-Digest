@@ -294,6 +294,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     loadNotes(filterAll ? null : currentVideoId);
     sendResponse({ success: true });
   }
+  if (message.action === "videoChanged") {
+    // The content script detected a URL change (often a different ?p part of
+    // the same bvid). Re-check the active tab so the panel loads the right
+    // transcript instead of showing the previous part from cache.
+    const newPageId = BILI_PLATFORM.extractPageId(message.url || "");
+    if (newPageId && newPageId !== currentVideoId) {
+      checkCurrentTab();
+    }
+    sendResponse({ success: true });
+  }
   return false;
 });
 
@@ -537,7 +547,7 @@ async function checkCurrentTab() {
 }
 
 function extractVideoId(url) {
-  return BILI_PLATFORM.extractBvid(url);
+  return BILI_PLATFORM.extractPageId(url);
 }
 
 // ============================================================

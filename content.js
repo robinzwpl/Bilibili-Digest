@@ -32,7 +32,7 @@ let digestButton = null;
 let digestButtonObserver = null;
 let digestButtonReconcileTimer = null;
 let digestButtonResizeListenerAdded = false;
-let lastBvid = null;
+let lastUrl = null;
 
 // ============================================================
 // INITIALIZATION
@@ -52,7 +52,7 @@ function init() {
     noteKeyboardListenerAdded = true;
   }
 
-  lastBvid = currentBvid();
+  lastUrl = window.location.href;
   injectDigestButton();
   tryInjectNoteButton();
   setupButtonObserver();
@@ -458,7 +458,7 @@ async function saveCurrentNote() {
 
   const currentTime = Math.max(0, Math.floor(video.currentTime) - 3);
   const videoInfo = extractVideoInfo();
-  const bvid = currentBvid();
+  const pageId = BILI_PLATFORM.extractPageId(window.location.href);
 
   const btn = noteButton;
   const originalContent = btn ? btn.innerHTML : "";
@@ -471,7 +471,7 @@ async function saveCurrentNote() {
   try {
     const result = await chrome.runtime.sendMessage({
       action: "saveNote",
-      videoId: bvid,
+      videoId: pageId,
       timestamp: currentTime,
       videoTitle: videoInfo.title,
       channelName: videoInfo.channelName,
@@ -629,14 +629,16 @@ function escapeHtml(text) {
 // ============================================================
 
 /**
- * Bilibili is an SPA. We detect video changes by watching URL changes via
- * history events + a light polling fallback, then reconcile the buttons.
+ * Bilibili is an SPA. We detect video changes by watching the full URL
+ * (including the ?p=N playlist page) via history events + a light polling
+ * fallback, then reconcile the buttons and notify the side panel.
  */
 function onNavigation() {
-  const bvid = currentBvid();
+  const url = window.location.href;
+  const pageId = BILI_PLATFORM.extractPageId(url);
 
-  if (bvid === lastBvid && bvid) return; // same video, nothing to do
-  lastBvid = bvid;
+  if (url === lastUrl) return; // same URL, nothing to do
+  lastUrl = url;
 
   // Clean up stale buttons.
   document.querySelectorAll("#bili-digest-button").forEach((b) => b.remove());
@@ -659,6 +661,20 @@ function onNavigation() {
   const existingToast = document.getElementById("bili-note-toast");
   if (existingToast) existingToast.remove();
 
+  // Notify the side panel that the page (possibly the same bvid, different
+  // playlist part) has changed, so it fetches the correct transcript.
+  if (pageId) {
+    try {
+      chrome.runtime.sendMessage({
+        action: "videoChanged",
+        pageId,
+        url,
+      });
+    } catch (err) {
+      debugLog("[Bilibili Digest Content] videoChanged send failed:", err);
+    }
+  }
+
   setTimeout(() => {
     scheduleDigestButtonReconciliation(0);
     tryInjectNoteButton();
@@ -677,6 +693,6 @@ function setupNavigationWatcher() {
   };
   // Light polling fallback in case neither fired.
   setInterval(() => {
-    if (currentBvid() !== lastBvid) onNavigation();
+    if (window.location.href !== lastUrl) onNavigation();
   }, 1000);
 }

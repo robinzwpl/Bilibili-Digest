@@ -30,18 +30,56 @@ var BILI_PLATFORM = (() => {
     }
   }
 
+  /** Extract the playlist/page number from a bilibili URL (?p=N), default 1. */
+  function extractPage(url) {
+    try {
+      const u = new URL(url);
+      const p = u.searchParams.get("p");
+      const n = Number(p);
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  /**
+   * A stable page identifier that includes the playlist page.
+   * Same bvid with different ?p values gets different IDs so each part
+   * is cached and fetched independently.
+   */
+  function extractPageId(url) {
+    const bvid = extractBvid(url);
+    if (!bvid) return null;
+    const page = extractPage(url);
+    return page > 1 ? `${bvid}_p${page}` : bvid;
+  }
+
+  /**
+   * Split a pageId back into { bvid, page }.
+   * Accepts both "BVxxx_p2" and plain "BVxxx".
+   */
+  function splitPageId(pageId) {
+    const input = String(pageId || "");
+    const m = input.match(/^(BV[0-9A-Za-z]{10})(?:_p(\d+))?$/);
+    if (!m) return { bvid: null, page: 1 };
+    return { bvid: m[1], page: Number(m[2]) || 1 };
+  }
+
   /** True when the URL is a standard bilibili video watch page. */
   function isBilibiliVideoPage(url) {
     return extractBvid(url) !== null;
   }
 
-  /** Canonical watch URL for a bvid. Throws on invalid id. */
-  function canonicalBilibiliUrl(bvid) {
+  /** Canonical watch URL for a bvid/page. Throws on invalid id. */
+  function canonicalBilibiliUrl(bvid, page) {
     const normalized = String(bvid || "").trim();
     if (!BVID_RE.test(normalized)) {
       throw new Error("Invalid bilibili video ID (bvid).");
     }
-    return `${ORIGIN}/video/${normalized}`;
+    const p = Number(page) || 1;
+    return p > 1
+      ? `${ORIGIN}/video/${normalized}?p=${p}`
+      : `${ORIGIN}/video/${normalized}`;
   }
 
   /**
@@ -70,6 +108,9 @@ var BILI_PLATFORM = (() => {
     API_ORIGIN,
     BVID_RE,
     extractBvid,
+    extractPage,
+    extractPageId,
+    splitPageId,
     isBilibiliVideoPage,
     canonicalBilibiliUrl,
     ERROR_CODES,

@@ -587,8 +587,10 @@ async function getBilibiliCookieHeader() {
  * Fetch bilibili video metadata (aid/cid) for a bvid via the view endpoint.
  * Returns { aid, cid, title, ownerName } or { error }.
  */
-async function fetchBilibiliView(bvid) {
-  const url = "https://api.bilibili.com/x/web-interface/view?bvid=" + encodeURIComponent(bvid);
+async function fetchBilibiliView(bvid, page) {
+  let url = "https://api.bilibili.com/x/web-interface/view?bvid=" + encodeURIComponent(bvid);
+  const p = Number(page) || 1;
+  if (p > 1) url += "&p=" + p;
   const res = await fetch(url, {
     headers: { "User-Agent": BILI_UA, Referer: "https://www.bilibili.com/" },
   });
@@ -708,15 +710,19 @@ function normalizeBilibiliSubtitle(json, language, needsTranslation) {
 }
 
 /**
- * Fetch subtitles for a bilibili video (bvid) using the official API chain:
+ * Fetch subtitles for a bilibili video (pageId) using the official API chain:
  * view -> wbi/v2 (signed, cookie) -> subtitle CDN JSON.
  *
- * @param {string} bvid - e.g. "BV1Fg411D7Jy"
+ * @param {string} pageId - e.g. "BV1Fg411D7Jy" or "BV1Fg411D7Jy_p2"
  * @returns {Object} - { success, transcript, transcriptText, ... } or { success:false, error }
  */
-async function handleFetchTranscript(bvid) {
+async function handleFetchTranscript(pageId) {
+  const { bvid, page } = BILI_PLATFORM.splitPageId(pageId);
+  if (!bvid) {
+    return { success: false, error: "INVALID_ID", message: "Invalid bilibili video ID." };
+  }
   try {
-    const view = await fetchBilibiliView(bvid);
+    const view = await fetchBilibiliView(bvid, page);
     if (view.error) {
       return {
         success: false,
