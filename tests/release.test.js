@@ -326,3 +326,25 @@ test("published prompt files contain runtime sections", () => {
     }
   }
 });
+
+test("the release file list is the only thing the check script writes to stdout", () => {
+  const checkScript = read("scripts/check-release.sh");
+
+  // package-extension.sh turns every non-empty stdout line from --print-files
+  // into a ZIP entry, so any other stdout write ends up inside the archive.
+  assert.match(
+    checkScript,
+    /node --test tests\/\*\.test\.js >&2/,
+    "the TAP report must go to stderr, not to the file list",
+  );
+
+  const stdoutWrites = [...checkScript.matchAll(/^[ \t]*printf .*$/gm)]
+    .map((match) => match[0].trim())
+    .filter((line) => !line.includes(">&2"));
+  assert.equal(
+    stdoutWrites.length,
+    1,
+    `only the file list may use stdout, found: ${stdoutWrites.join(" | ")}`,
+  );
+  assert.match(stdoutWrites[0], /release_files/);
+});

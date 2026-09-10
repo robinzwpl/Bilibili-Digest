@@ -233,7 +233,9 @@ for file in "${javascript_files[@]}"; do
 done
 
 if compgen -G "tests/*.test.js" >/dev/null; then
-  node --test tests/*.test.js
+  # The TAP report must not reach stdout: --print-files reserves stdout for the
+  # release file list, and the packaging script consumes every non-empty line.
+  node --test tests/*.test.js >&2
 fi
 
 if ((${#javascript_files[@]} > 0)); then
