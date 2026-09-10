@@ -358,15 +358,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep the message channel open for async response
   }
 
-  if (message.action === "getPlayInfo") {
-    // Live page identity (bvid/aid/cid/page) read from the player. Used by the
-    // side panel to tell playlist parts apart when the URL lags behind.
-    readPlayInfoFromTab(message.tabId)
-      .then((info) => sendResponse({ success: !!info, info: info }))
-      .catch(() => sendResponse({ success: false, info: null }));
-    return true;
-  }
-
   if (message.action === "analyzeTranscript") {
     // Pass video duration to help the AI validate timestamps
     handleAnalyzeTranscript(
@@ -593,11 +584,13 @@ async function getBilibiliCookieHeader() {
 }
 
 /**
- * Read the *currently playing* video identity from the page's MAIN world.
+ * Read the video identity from the page's MAIN world.
  *
- * Bilibili is an SPA: switching a playlist part can update the URL
- * asynchronously, or not at all. The player instance and the video element
- * always know the real cid, so they are the authoritative source — not the URL.
+ * This is the FALLBACK path only. The view endpoint keyed by the URL's `?p=`
+ * is the primary source, because the player lags behind a playlist-part
+ * switch: right after the user picks a new part, `window.player` can still
+ * report the previous part's cid, and using it silently served the wrong
+ * subtitles. Reach for this only when the API lookup failed.
  *
  * Runs in the MAIN world so it can touch the page's own `window.player` and
  * `window.__INITIAL_STATE__`. This function must stay self-contained: it is
@@ -658,8 +651,14 @@ async function readPlayInfoFromTab(tabId) {
 }
 
 /**
- * Fetch bilibili video metadata (aid/cid) for a bvid via the view endpoint.
- * Returns { aid, cid, title, ownerName } or { error }.
+ * Fetch bilibili video metadata for a bvid via the view endpoint.
+ *
+ * The `?p=` page number is the user's selection (bilibili writes it into the
+ * URL on every playlist-part switch), so it is the authoritative input. We ask
+ * for that page and then prefer `data.pages[p-1].cid`, which is the cid of
+ * that exact part — `data.cid` alone is only reliable for page 1.
+ *
+ * Returns { aid, cid, page, pages, title, ownerName } or { error }.
  */
 async function fetchBilibiliView(bvid, page) {
   let url = "https://api.bilibili.com/x/web-interface/view?bvid=" + encodeURIComponent(bvid);
@@ -679,7 +678,29 @@ async function fetchBilibiliView(bvid, page) {
     };
   }
   const d = json.data;
-  return { aid: d.aid, cid: d.cid, title: d.title || "", ownerName: d.owner ? d.owner.name : "" };
+  const pages = (Array.isArray(d.pages) ? d.pages : []).map(function (entry) {
+    return {
+      page: Number(entry.page) || 0,
+      cid: Number(entry.cid) || 0,
+      part: entry.part || "",
+    };
+  });
+
+  // Resolve the cid for the requested part explicitly. `pages` is the ground
+  // truth for multi-part videos; `d.cid` is the fallback for single-part ones
+  // or when the requested page is out of range.
+  let cid = Number(d.cid) || 0;
+  const match = pages.find(function (entry) { return entry.page === p; });
+  if (match && match.cid) cid = match.cid;
+
+  return {
+    aid: d.aid,
+    cid: cid,
+    page: p,
+    pages: pages,
+    title: d.title || "",
+    ownerName: d.owner ? d.owner.name : "",
+  };
 }
 
 /**
@@ -787,12 +808,16 @@ function normalizeBilibiliSubtitle(json, language, needsTranslation) {
  * Fetch subtitles for a bilibili video using the official API chain:
  * view -> wbi/v2 (signed, cookie) -> subtitle CDN JSON.
  *
- * The cid is read from the live page first (playlist parts share a bvid, so
- * the URL/page id alone cannot tell them apart); the view endpoint is the
- * fallback when the page isn't reachable.
+ * The requested part is identified by `pageId` (bvid + `?p=` page number).
+ * We resolve its cid through the view endpoint FIRST, because that lookup is
+ * purely a function of the page number the user actually selected. The live
+ * player used to be the primary source, but `window.player` can still report
+ * the previous part for a while after a switch, which silently served the
+ * wrong part's subtitles. It is now only a fallback for when the view request
+ * itself fails.
  *
  * @param {string} pageId - e.g. "BV1Fg411D7Jy" or "BV1Fg411D7Jy_p2"
- * @param {number} [tabId] - active tab, used to read the live cid
+ * @param {number} [tabId] - active tab, used to read the live cid as a fallback
  * @returns {Object} - { success, transcript, transcriptText, ... } or { success:false, error }
  */
 async function handleFetchTranscript(pageId, tabId) {
@@ -801,34 +826,50 @@ async function handleFetchTranscript(pageId, tabId) {
   const page = split.page;
 
   try {
-    // Prefer the page's live cid — it is the only value that reliably tracks
-    // playlist part switches.
     let aid = null;
     let cid = null;
-    const live = await readPlayInfoFromTab(tabId);
-    if (live && live.cid) {
-      aid = live.aid;
-      cid = live.cid;
+    let cidSource = null;
+
+    // 1. Authoritative: the cid of the selected page, straight from the view
+    //    endpoint. Deterministic, and independent of how far the player has
+    //    got with swapping the media source.
+    if (bvid) {
+      const view = await fetchBilibiliView(bvid, page);
+      if (view.error) {
+        // Only a hard "this video does not exist" is fatal; anything else may
+        // still be recoverable from the live player below.
+        if (view.error === "NOT_FOUND") {
+          return {
+            success: false,
+            error: view.error,
+            message: view.message || "Video not found.",
+          };
+        }
+      } else {
+        aid = view.aid;
+        cid = view.cid;
+        cidSource = "view";
+      }
+    }
+
+    // 2. Fallback: ask the page's player which cid is actually loaded.
+    if (!cid) {
+      const live = await readPlayInfoFromTab(tabId);
+      if (live && live.cid) {
+        aid = live.aid;
+        cid = live.cid;
+        cidSource = "live";
+      }
     }
 
     if (!cid) {
-      if (!bvid) {
-        return {
-          success: false,
-          error: "INVALID_ID",
-          message: "Invalid bilibili video ID.",
-        };
-      }
-      const view = await fetchBilibiliView(bvid, page);
-      if (view.error) {
-        return {
-          success: false,
-          error: view.error,
-          message: view.message || "Failed to load video info.",
-        };
-      }
-      aid = view.aid;
-      cid = view.cid;
+      return {
+        success: false,
+        error: bvid ? "VIEW_FAILED" : "INVALID_ID",
+        message: bvid
+          ? "Failed to resolve this video part. Please reload the page and try again."
+          : "Invalid bilibili video ID.",
+      };
     }
 
     const list = await fetchBilibiliSubtitleList(aid, cid);
@@ -879,6 +920,8 @@ async function handleFetchTranscript(pageId, tabId) {
       isAiSubtitle: picked.isAi,
       cid: cid,
       aid: aid,
+      page: page,
+      cidSource: cidSource,
     };
   } catch (error) {
     console.error("Transcript fetch error:", error);
@@ -1763,6 +1806,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   updatePanelForTab,
   handleFetchTranscript,
   readPlayInfoFromTab,
+  fetchBilibiliView,
   pickSubtitleTrack,
   normalizeBilibiliSubtitle,
 };

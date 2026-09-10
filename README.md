@@ -17,8 +17,9 @@ Bilibili Digest is a bring-your-own-key project installed locally from GitHub. I
 
 ![Bilibili Digest demo](Bilibili%20Digest%20demo.png)
 
-## New in v1.2.0
+## New in v1.3.0
 
+- Switching between episodes in a video playlist now reloads the panel with the selected part, instead of keeping the previous part on screen.
 - Search transcript words or phrases and move through every match.
 - Use one Original, Chinese, or bilingual setting across Transcript, Overview, and Notes. New videos stay in Original by default.
 - Translate visible Overview and Notes content progressively in small cached batches.

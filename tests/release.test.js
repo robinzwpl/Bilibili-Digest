@@ -17,7 +17,7 @@ test("manifest uses minimized install-time permissions", () => {
   assert.ok(!manifest.permissions.includes("activeTab"));
   assert.ok(manifest.host_permissions.includes("https://api.deepseek.com/*"));
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "1.2.0");
+  assert.equal(manifest.version, "1.3.0");
 });
 
 test("release copy documents current scope without em dashes", () => {
@@ -194,6 +194,27 @@ test("background reconciles side-panel state after navigation commits", () => {
   assert.match(
     background,
     /await closePanelForTab\(tabId, windowId\);[\s\S]*setOptions\(\{ tabId, enabled: false \}\)/,
+  );
+});
+
+test("playlist parts are identified from the URL, never from the player", () => {
+  const sidepanel = read("sidepanel.js");
+  const manifest = JSON.parse(read("manifest.json"));
+
+  // The player keeps reporting the previous part for a while after a switch,
+  // so the URL's ?p= is the only trusted answer to "which part is this".
+  assert.match(
+    sidepanel,
+    /const page = BILI_PLATFORM\.extractPage\(tab\.url\);/,
+  );
+  assert.doesNotMatch(sidepanel, /getPlayInfo/);
+  assert.ok(
+    manifest.permissions.includes("webNavigation"),
+    "history rewrites need the webNavigation permission to be detected",
+  );
+  assert.match(
+    sidepanel,
+    /chrome\.webNavigation\.onHistoryStateUpdated\.addListener/,
   );
 });
 

@@ -29,6 +29,7 @@ let isAnalysisLoading = false; // Track if analysis is in progress
 let bilibiliTabId = null; // Store the bilibili tab ID for reliable messaging
 let videoChangeTimer = null; // Debounces videoChanged events from the content script
 let forceRefreshPending = false; // Set when the content script reports a page change
+let digestRequestToken = 0; // Only the newest startDigest() call may paint the panel
 let errorAction = null;
 
 // --- Translation state ---
@@ -396,6 +397,28 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   handleFrontTabUrl(url);
 });
 
+// Fires when the page rewrites its own URL without a reload. Picking another
+// entry in bilibili's episode/part list does exactly that (it swaps `?p=`),
+// and this event is the purpose-built signal for it — `tabs.onUpdated` is not
+// guaranteed to report history rewrites. Without this the panel could miss a
+// part switch entirely and keep showing the previous part.
+if (chrome.webNavigation?.onHistoryStateUpdated) {
+  chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+    if (details.frameId !== 0) return; // Top frame only.
+    if (!BILI_PLATFORM.isBilibiliVideoPage(details.url)) return;
+    chrome.tabs
+      .get(details.tabId)
+      .then((tab) => {
+        if (!tab.active) return;
+        if (panelWindowId !== null && tab.windowId !== panelWindowId) return;
+        handleFrontTabUrl(details.url);
+      })
+      .catch(() => {
+        // Tab closed before we could read it — nothing to do.
+      });
+  });
+}
+
 // Fires when a different tab comes to the front — switching tabs, or a new
 // tab being opened (including ones opened by clicking links in other apps).
 chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
@@ -515,27 +538,17 @@ async function checkCurrentTab() {
     // Store the tab ID for reliable messaging later
     bilibiliTabId = tab.id;
 
-    // Ask the page what is ACTUALLY playing. Playlist parts share a bvid, and
-    // bilibili may update the URL late (or not at all), so the player's own
-    // page number is the only reliable identity.
-    let liveInfo = null;
-    try {
-      const playInfo = await chrome.runtime.sendMessage({
-        action: "getPlayInfo",
-        tabId: tab.id,
-      });
-      if (playInfo && playInfo.success) liveInfo = playInfo.info;
-    } catch (e) {
-      debugLog("[Bilibili Digest Panel] getPlayInfo failed:", e);
-    }
-
-    const bvid =
-      BILI_PLATFORM.extractBvid(tab.url) || (liveInfo && liveInfo.bvid) || null;
-    const realPage =
-      (liveInfo && Number(liveInfo.page)) ||
-      BILI_PLATFORM.extractPage(tab.url) ||
-      1;
-    const videoId = bvid ? BILI_PLATFORM.buildPageId(bvid, realPage) : null;
+    // Identify the video from the URL alone. bilibili writes the selected
+    // playlist part into `?p=`, so the URL is exactly what the user clicked.
+    //
+    // The player must NOT be consulted here: right after a part switch it can
+    // still report the previous part, which made the panel compute the OLD
+    // videoId, treat the switch as "same video", and re-render the cached
+    // transcript of the previous part. That is the bug where picking another
+    // part appeared to do nothing.
+    const bvid = BILI_PLATFORM.extractBvid(tab.url);
+    const page = BILI_PLATFORM.extractPage(tab.url);
+    const videoId = bvid ? BILI_PLATFORM.buildPageId(bvid, page) : null;
 
     if (videoId) {
       currentVideoUrl = tab.url;
@@ -591,6 +604,13 @@ async function startDigest(videoId, videoUrl) {
     return;
   }
 
+  // One click on a playlist entry can fire several signals (tabs.onUpdated,
+  // webNavigation, the content script), and the transcript fetch is slow
+  // enough that an older request could land last and repaint the part the
+  // user just left. A monotonic token lets only the newest request write.
+  const token = ++digestRequestToken;
+  const isCurrentRequest = () => token === digestRequestToken;
+
   const videoChanged = videoId !== currentVideoId;
 
   // Every video change invalidates observer work and in-flight translations.
@@ -614,6 +634,7 @@ async function startDigest(videoId, videoUrl) {
 
   // Check cache for this video
   const cached = await loadFromCache(videoId);
+  if (!isCurrentRequest()) return; // A newer part won the race; drop this one.
   if (cached) {
     debugLog("Loading from cache:", videoId);
     currentVideoId = videoId;
@@ -691,6 +712,8 @@ async function startDigest(videoId, videoUrl) {
     videoId: videoId,
     tabId: bilibiliTabId,
   });
+
+  if (!isCurrentRequest()) return; // A newer part won the race; drop this one.
 
   if (!transcriptResult.success) {
     showError(
@@ -1971,6 +1994,16 @@ function getTranscriptContext(selectedText) {
  * without consuming API tokens or subtitle refetches.
  * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
  */
+/**
+ * Bump when the meaning of a cache key changes so stale entries are refetched.
+ *
+ * v2: v1 wrote playlist parts under whatever cid the player happened to
+ * report, so a part could be cached under the wrong key (or a part's own
+ * entry could hold a different part's transcript). Those entries are not
+ * trustworthy and must not be served.
+ */
+const DIGEST_CACHE_VERSION = 2;
+
 async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
 
@@ -1990,6 +2023,7 @@ async function saveToCache(videoId) {
     }
 
     const cacheData = {
+      version: DIGEST_CACHE_VERSION,
       analysis: currentAnalysis, // May be null if not yet analyzed
       transcript: currentTranscript,
       transcriptText: currentTranscriptText,
@@ -2071,6 +2105,12 @@ async function loadFromCache(videoId) {
     const cached = result[`digest_${videoId}`];
 
     if (!cached) return null;
+
+    // Entries written by an older key scheme are not trustworthy.
+    if (cached.version !== DIGEST_CACHE_VERSION) {
+      await chrome.storage.local.remove(`digest_${videoId}`);
+      return null;
+    }
 
     // Cache expires after 30 days
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;

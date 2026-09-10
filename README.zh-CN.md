@@ -19,8 +19,9 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 ![Bilibili Digest 双语演示](Bilibili%20Digest%20demo%20bilingual.png)
 
-## v1.2.0 更新
+## v1.3.0 更新
 
+- 在视频选集中切换分 P 时，侧边栏会重新加载为所选分 P，不再停留在上一个分 P。
 - 搜索字幕中的单词或短语，并依次查看所有匹配位置。
 - 在 Transcript、Overview 和 Notes 中共用 Original、中文和双语设置。新视频默认保持 Original，不会自动消耗翻译 token。
 - 只翻译当前可见的 Overview 和 Notes 内容，并通过小批次渐进显示和缓存结果。

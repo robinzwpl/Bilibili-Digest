@@ -1,10 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Bilibili Digest",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minimum_chrome_version": "116",
   "description": "Turn Bilibili videos into learning resources with Chinese subtitles, AI overviews, and notes.",
-  "permissions": ["sidePanel", "storage", "tabs", "scripting", "cookies"],
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting",
+    "cookies",
+    "webNavigation"
+  ],
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://api.bilibili.com/*",

@@ -2,8 +2,8 @@
  * @file subtitle-fetch.test.js
  *
  * Tests the bilibili subtitle pipeline, in particular the playlist-part fix:
- * the cid must come from the live page when available, and the view endpoint
- * fallback must carry the ?p page number.
+ * the cid must be the one belonging to the page number the user selected, and
+ * the player may only be consulted when the view lookup itself fails.
  */
 
 const test = require("node:test");
@@ -34,12 +34,21 @@ const SUBTITLE_BODY_JSON = {
   ],
 };
 
+// Three playlist parts. Each part owns a distinct cid, so a test can tell
+// "resolved the part the user picked" apart from "kept the old part".
+const VIEW_PAGES = [
+  { page: 1, cid: 1111, part: "P1" },
+  { page: 2, cid: 2222, part: "P2" },
+  { page: 3, cid: 3333, part: "P3" },
+];
+
 function makeSubtitleList(subtitles) {
   return { code: 0, data: { subtitle: { subtitles: subtitles } } };
 }
 
 function loadBackground({
   liveInfo = null,
+  viewData = null,
   subtitles = [
     {
       lan: "zh-CN",
@@ -66,14 +75,17 @@ function loadBackground({
       return { ok: true, status: 200, json: async () => NAV_JSON };
     }
     if (target.includes("/x/web-interface/view")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          code: 0,
-          data: { aid: 111, cid: 222, title: "T", owner: { name: "U" } },
-        }),
+      if (viewData && viewData.error) {
+        return { ok: true, status: 200, json: async () => viewData.error };
+      }
+      const data = viewData || {
+        aid: 111,
+        cid: 1111,
+        pages: VIEW_PAGES,
+        title: "T",
+        owner: { name: "U" },
       };
+      return { ok: true, status: 200, json: async () => ({ code: 0, data }) };
     }
     if (target.includes("/x/player/wbi/v2")) {
       return {
@@ -140,40 +152,50 @@ function loadBackground({
   return { helpers: sandbox.__YTD_TRANSLATION_TESTING__, calls };
 }
 
-test("a live page cid wins over the view endpoint", async () => {
+test("the selected playlist part decides the cid, not the player", async () => {
+  // The player is still reporting part 1 (888) while the user has already
+  // moved to part 3. Trusting the player here is exactly what used to serve
+  // the previous part's subtitles.
   const { helpers, calls } = loadBackground({
-    liveInfo: { aid: 999, cid: 888, page: 3, bvid: "BV1Fg411D7Jy" },
+    liveInfo: { aid: 999, cid: 888, page: 1, bvid: "BV1Fg411D7Jy" },
   });
 
   const result = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p3", 42);
 
   assert.equal(result.success, true);
-  assert.equal(result.cid, 888);
-  assert.equal(result.aid, 999);
+  assert.equal(result.cid, 3333, "must use the cid of page 3");
+  assert.equal(result.page, 3);
+  assert.equal(result.cidSource, "view");
+  assert.equal(result.aid, 111);
 
   const viewCalls = calls.filter((u) => u.includes("/x/web-interface/view"));
+  assert.equal(viewCalls.length, 1);
+  assert.match(viewCalls[0], /bvid=BV1Fg411D7Jy/);
+  assert.match(viewCalls[0], /[?&]p=3/);
+
+  // The live player is not even consulted when the API resolves the part.
   assert.equal(
-    viewCalls.length,
+    calls.filter((u) => u.startsWith("executeScript:")).length,
     0,
-    "the view endpoint must be skipped when a live cid is available",
+    "the player must not be read when the API already knows the cid",
   );
 
   const playerCalls = calls.filter((u) => u.includes("/x/player/wbi/v2"));
   assert.equal(playerCalls.length, 1);
-  assert.match(playerCalls[0], /aid=999/);
-  assert.match(playerCalls[0], /cid=888/);
+  assert.match(playerCalls[0], /aid=111/);
+  assert.match(playerCalls[0], /cid=3333/);
 });
 
-test("without a live cid the view endpoint receives the playlist page", async () => {
-  const { helpers, calls } = loadBackground({ liveInfo: null });
+test("page 1 resolves to the first part's cid", async () => {
+  const { helpers } = loadBackground({ liveInfo: null });
 
-  const result = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p2", 42);
+  const bare = await helpers.handleFetchTranscript("BV1Fg411D7Jy", 42);
+  assert.equal(bare.cid, 1111);
+  assert.equal(bare.page, 1);
 
-  assert.equal(result.success, true);
-  const viewCalls = calls.filter((u) => u.includes("/x/web-interface/view"));
-  assert.equal(viewCalls.length, 1);
-  assert.match(viewCalls[0], /bvid=BV1Fg411D7Jy/);
-  assert.match(viewCalls[0], /[?&]p=2/);
+  const explicit = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p1", 42);
+  assert.equal(explicit.cid, 1111);
+  assert.equal(explicit.page, 1);
 });
 
 test("page 1 view requests omit the p parameter", async () => {
@@ -184,6 +206,59 @@ test("page 1 view requests omit the p parameter", async () => {
   const viewCalls = calls.filter((u) => u.includes("/x/web-interface/view"));
   assert.equal(viewCalls.length, 1);
   assert.doesNotMatch(viewCalls[0], /[?&]p=/);
+});
+
+test("the live player is a fallback when the view lookup fails", async () => {
+  const { helpers, calls } = loadBackground({
+    liveInfo: { aid: 999, cid: 888, page: 3, bvid: "BV1Fg411D7Jy" },
+    viewData: { error: { code: -500, message: "server error" } },
+  });
+
+  const result = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p3", 42);
+
+  assert.equal(result.success, true);
+  assert.equal(result.cid, 888);
+  assert.equal(result.aid, 999);
+  assert.equal(result.cidSource, "live");
+
+  const playerCalls = calls.filter((u) => u.includes("/x/player/wbi/v2"));
+  assert.equal(playerCalls.length, 1);
+  assert.match(playerCalls[0], /cid=888/);
+});
+
+test("a missing video fails fast with NOT_FOUND", async () => {
+  const { helpers, calls } = loadBackground({
+    liveInfo: { aid: 999, cid: 888, page: 1, bvid: "BV1Fg411D7Jy" },
+    viewData: { error: { code: -404, message: "not found" } },
+  });
+
+  const result = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p1", 42);
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, "NOT_FOUND");
+  assert.equal(
+    calls.filter((u) => u.includes("/x/player/wbi/v2")).length,
+    0,
+    "no subtitle lookup should run for a video that does not exist",
+  );
+});
+
+test("an out-of-range page falls back to the video's default cid", async () => {
+  const { helpers } = loadBackground({ liveInfo: null });
+
+  const result = await helpers.handleFetchTranscript("BV1Fg411D7Jy_p9", 42);
+
+  assert.equal(result.success, true);
+  assert.equal(result.cid, 1111);
+});
+
+test("an unusable page id reports VIEW_FAILED without crashing", async () => {
+  const { helpers } = loadBackground({ liveInfo: null });
+
+  const result = await helpers.handleFetchTranscript("not-a-video", 42);
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, "INVALID_ID");
 });
 
 test("track selection prefers Chinese CC, then AI Chinese, then foreign", () => {
