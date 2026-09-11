@@ -20,6 +20,42 @@ const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
 
+/**
+ * Detect the fatal "Extension context invalidated" error. In MV3 it means the
+ * extension was reloaded or updated while this content-script instance was
+ * still in the page. The stale script can no longer talk to the background
+ * service worker; the only safe recovery is a full page reload.
+ */
+function isContextInvalidatedError(err) {
+  const msg = String(err?.message ?? err);
+  return msg.includes("Extension context invalidated");
+}
+
+/**
+ * Wrapper around chrome.runtime.sendMessage that auto-recovers from a stale
+ * content-script context on explicit user actions (Digest / Note buttons).
+ *
+ * When the extension reloads, the injected content script is orphaned. Instead
+ * of silently failing (or leaving the UI stuck on "SAVING..."), we refresh the
+ * page so the user gets a fresh content-script context and can continue.
+ */
+async function sendRuntimeMessage(message, { reloadOnInvalidated = true } = {}) {
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (err) {
+    if (reloadOnInvalidated && isContextInvalidatedError(err)) {
+      // Let the user know why the page is about to reload, then reload.
+      // Using a small timeout gives the browser a chance to paint the message.
+      const toast = document.getElementById("bili-note-toast");
+      if (toast) toast.remove();
+      window.location.reload();
+      // The navigation tears down this script; keep the promise pending.
+      return new Promise(() => {});
+    }
+    throw err;
+  }
+}
+
 // ============================================================
 // GLOBAL STATE
 // ============================================================
@@ -207,7 +243,7 @@ function createDigestButton() {
     e.preventDefault();
     e.stopPropagation();
     try {
-      await chrome.runtime.sendMessage({ action: "openSidePanel" });
+      await sendRuntimeMessage({ action: "openSidePanel" });
     } catch (err) {
       console.error("[Bilibili Digest] Failed to open side panel:", err);
     }
@@ -469,7 +505,7 @@ async function saveCurrentNote() {
   }
 
   try {
-    const result = await chrome.runtime.sendMessage({
+    const result = await sendRuntimeMessage({
       action: "saveNote",
       videoId: pageId,
       timestamp: currentTime,
@@ -693,11 +729,13 @@ function onNavigation(reason) {
   // Notify the side panel so it re-reads the tab and loads the correct part.
   // We deliberately do NOT send pageId for the panel to compare — it may be
   // stale — the panel re-derives the identity from the live player instead.
-  try {
-    chrome.runtime.sendMessage({ action: "videoChanged", pageId, url });
-  } catch (err) {
-    debugLog("[Bilibili Digest Content] videoChanged send failed:", err);
-  }
+  // We are reacting to an SPA navigation, not a direct user gesture, so do
+  // not force a page reload on a stale context here; just log.
+  sendRuntimeMessage({ action: "videoChanged", pageId, url }, { reloadOnInvalidated: false }).catch(
+    (err) => {
+      debugLog("[Bilibili Digest Content] videoChanged send failed:", err);
+    },
+  );
 
   setTimeout(() => {
     scheduleDigestButtonReconciliation(0);

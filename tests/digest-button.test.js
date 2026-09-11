@@ -141,11 +141,18 @@ function createHarness() {
     },
   };
 
+  const reloadState = { count: 0 };
+
   const context = vm.createContext({
     console,
     document,
     window: {
-      location: { href: "https://www.bilibili.com/video/BV1Fg411D7Jy" },
+      location: {
+        href: "https://www.bilibili.com/video/BV1Fg411D7Jy",
+        reload: () => {
+          reloadState.count++;
+        },
+      },
       addEventListener(type, listener) {
         windowListeners[type] = listener;
       },
@@ -195,6 +202,7 @@ function createHarness() {
     elements,
     windowListeners,
     observers,
+    reloadState,
     flushTimers() {
       const callbacks = Array.from(timers.values());
       timers.clear();
@@ -295,4 +303,33 @@ test("DOM mutation reconciliation repairs a replaced toolbar", () => {
   assert.equal(old.right.children.length, 0);
   assert.equal(fresh.right.children.length, 1);
   assert.equal(fresh.right.children[0].id, "bili-digest-button");
+});
+
+test("Digest button reloads the page when the extension context was invalidated", async () => {
+  const harness = createHarness();
+  const toolbar = createToolbar({ width: 500, height: 36 });
+  harness.toolbars.push(toolbar.toolbar);
+  harness.context.injectDigestButton();
+
+  const button = toolbar.right.children.find((child) => child.id === "bili-digest-button");
+  assert.ok(button, "digest button should be injected");
+
+  // Simulate the extension being reloaded while the content script is still
+  // alive in the page: sendMessage throws the Chrome-specific error.
+  harness.context.chrome.runtime.sendMessage = async () => {
+    throw new Error("Extension context invalidated");
+  };
+
+  const event = {
+    preventDefault() {},
+    stopPropagation() {},
+  };
+
+  // Fire the click but do not await it: the handler deliberately returns a
+  // never-settling promise after triggering the page reload.
+  button.listeners.click(event);
+  // Let the rejected-sendMessage microtask run so the reload() call happens.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.reloadState.count, 1, "page should reload to recover a fresh context");
 });
