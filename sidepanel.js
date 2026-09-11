@@ -626,6 +626,7 @@ function extractVideoId(url) {
 // ============================================================
 
 const ASR_PROMPT_READY = "设置中已开启，是否现在开始转录？";
+const ASR_PROMPT_HAS_SUBTITLE = "当前视频已有字幕，是否仍要使用语音转录？";
 const ASR_PROMPT_DISABLED = "设置中还未开启语音转写，先到设置页面进行开启";
 
 function setAsrTabVisible(visible) {
@@ -654,7 +655,9 @@ async function renderAsrPrompt(_reason) {
   primary.style.display = "";
 
   if (ready) {
-    message.textContent = ASR_PROMPT_READY;
+    message.textContent = currentVideoNoSubtitle
+      ? ASR_PROMPT_READY
+      : ASR_PROMPT_HAS_SUBTITLE;
     primary.textContent = "是";
     primary.onclick = () => startAsrTranscription(currentVideoId);
     secondary.style.display = "";
@@ -854,10 +857,11 @@ async function startDigest(videoId, videoUrl) {
       );
   }
 
-  // The ASR tab is only for videos without a subtitle track. Reset here and
-  // let applyTranscriptResult / enterAsrMode decide whether to show it.
+  // The ASR tab is always shown so the user can trigger speech-to-text at any
+  // time. Reset the subtitle flag here and let the transcript result decide
+  // whether the current video actually has a subtitle track.
   currentVideoNoSubtitle = false;
-  setAsrTabVisible(false);
+  setAsrTabVisible(true);
 
   // Check cache for this video
   const cached = await loadFromCache(videoId);
@@ -876,7 +880,7 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptTimingEstimated =
       cached.transcriptTimingEstimated === true;
     currentVideoNoSubtitle = currentTranscriptSource === "asr";
-    setAsrTabVisible(currentVideoNoSubtitle);
+    setAsrTabVisible(true);
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -982,11 +986,11 @@ async function applyTranscriptResult(result, videoId) {
   // translation pipeline, whose target language is already Simplified Chinese).
   currentTranscriptMode = currentNeedsTranslation ? "zh" : "original";
 
-  // The ASR tab is only for videos without a subtitle track. Hide it for normal
-  // subtitle tracks; keep it visible for ASR results and switch to Transcript so
-  // the user sees the actual transcript.
+  // The ASR tab is always shown so the user can trigger speech-to-text at any
+  // time. The flag records whether this particular video has no subtitle track
+  // so the prompt can say the right thing.
   currentVideoNoSubtitle = currentTranscriptSource === "asr";
-  setAsrTabVisible(currentVideoNoSubtitle);
+  setAsrTabVisible(true);
 
   // Render transcript immediately (no LLM needed)
   renderTranscript();

@@ -370,10 +370,11 @@ var BILI_ASR = (() => {
   }
 
   /**
-   * The ASR tab is only offered when a video definitively has no subtitle track.
+   * The ASR tab is always offered so the user can trigger speech-to-text
+   * manually, not only as a fallback for videos with no subtitle track.
    */
-  function shouldShowAsrTab(hasSubtitle) {
-    return hasSubtitle === false;
+  function shouldShowAsrTab(_hasSubtitle) {
+    return true;
   }
 
   return {

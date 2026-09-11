@@ -286,8 +286,8 @@ test("asrTabReady is true only when enabled, key, and https endpoint are set", (
   assert.equal(asr.asrTabReady({}), false);
 });
 
-test("shouldShowAsrTab is true only when the video has no subtitle", () => {
+test("shouldShowAsrTab is always true so the user can trigger ASR manually", () => {
   assert.equal(asr.shouldShowAsrTab(false), true);
-  assert.equal(asr.shouldShowAsrTab(true), false);
-  assert.equal(asr.shouldShowAsrTab(undefined), false);
+  assert.equal(asr.shouldShowAsrTab(true), true);
+  assert.equal(asr.shouldShowAsrTab(undefined), true);
 });
