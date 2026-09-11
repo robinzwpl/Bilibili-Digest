@@ -37,6 +37,10 @@ let errorSecondaryAction = null;
 let currentTranscriptSource = null;
 let currentTranscriptTimingEstimated = false;
 
+// Tracks whether the current video has no bilibili subtitle track, which is
+// when the dedicated "语音转录" ASR tab is shown.
+let currentVideoNoSubtitle = false;
+
 // --- Translation state ---
 // Single-language display: Chinese subtitles show as-is; foreign subtitles are
 // auto-translated to Simplified Chinese. The user-facing mode switcher is
@@ -512,6 +516,20 @@ function setupEventListeners() {
     setNotesFilter(true);
     loadNotes(null); // Load all notes
   });
+
+  // When the user enables ASR in the settings page while a no-subtitle video
+  // is already loaded, return to the ASR tab and offer to start transcription.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    const change = changes[YTD_SETTINGS.STORAGE_KEY];
+    if (!change) return;
+    const newSettings = YTD_SETTINGS.normalize(change.newValue || {});
+    if (currentVideoNoSubtitle && BILI_ASR.asrTabReady(newSettings)) {
+      setAsrTabVisible(true);
+      switchTab("asr");
+      void renderAsrPrompt();
+    }
+  });
 }
 
 function setNotesFilter(showAll) {
@@ -604,6 +622,195 @@ function extractVideoId(url) {
 }
 
 // ============================================================
+// ASR TAB HELPERS
+// ============================================================
+
+const ASR_PROMPT_READY = "设置中已开启，是否现在开始转录？";
+const ASR_PROMPT_DISABLED = "设置中还未开启语音转写，先到设置页面进行开启";
+
+function setAsrTabVisible(visible) {
+  const tab = document.getElementById("asrTab");
+  if (tab) tab.style.display = visible ? "" : "none";
+}
+
+async function enterAsrMode(reason) {
+  currentVideoNoSubtitle = true;
+  showState("results");
+  setAsrTabVisible(true);
+  switchTab("asr");
+  await renderAsrPrompt(reason);
+}
+
+async function renderAsrPrompt(_reason) {
+  const settings = await loadStoredSettings();
+  const ready = BILI_ASR.asrTabReady(settings);
+
+  const title = document.getElementById("asrTitle");
+  const message = document.getElementById("asrMessage");
+  const primary = document.getElementById("asrPrimaryBtn");
+  const secondary = document.getElementById("asrSecondaryBtn");
+
+  title.textContent = "语音转录";
+  primary.style.display = "";
+
+  if (ready) {
+    message.textContent = ASR_PROMPT_READY;
+    primary.textContent = "是";
+    primary.onclick = () => startAsrTranscription(currentVideoId);
+    secondary.style.display = "";
+    secondary.textContent = "稍后";
+    secondary.onclick = () => switchTab("transcript");
+    return;
+  }
+
+  message.textContent = ASR_PROMPT_DISABLED;
+  primary.textContent = "Open Settings";
+  primary.onclick = () => chrome.runtime.sendMessage({ action: "openOptions" });
+  secondary.style.display = "none";
+  secondary.onclick = null;
+}
+
+function renderAsrProgress(text) {
+  const title = document.getElementById("asrTitle");
+  const message = document.getElementById("asrMessage");
+  const primary = document.getElementById("asrPrimaryBtn");
+  const secondary = document.getElementById("asrSecondaryBtn");
+
+  title.textContent = "语音转录";
+  message.textContent = text;
+  primary.style.display = "none";
+  primary.onclick = null;
+  secondary.style.display = "none";
+  secondary.onclick = null;
+}
+
+function renderAsrError(
+  titleText,
+  msg,
+  primaryLabel,
+  primaryAction,
+  secondaryLabel,
+  secondaryAction,
+) {
+  const title = document.getElementById("asrTitle");
+  const message = document.getElementById("asrMessage");
+  const primary = document.getElementById("asrPrimaryBtn");
+  const secondary = document.getElementById("asrSecondaryBtn");
+
+  title.textContent = titleText;
+  message.textContent = msg;
+  primary.style.display = "";
+  primary.textContent = primaryLabel;
+  primary.onclick = primaryAction;
+
+  if (secondaryLabel && secondaryAction) {
+    secondary.style.display = "";
+    secondary.textContent = secondaryLabel;
+    secondary.onclick = secondaryAction;
+  } else {
+    secondary.style.display = "none";
+    secondary.onclick = null;
+  }
+}
+
+async function startAsrTranscription(videoId) {
+  const token = ++digestRequestToken;
+  const isCurrentRequest = () => token === digestRequestToken;
+
+  renderAsrProgress("正在准备音频…");
+
+  const probe = await chrome.runtime.sendMessage({
+    action: "probeAudio",
+    videoId,
+  });
+
+  if (!isCurrentRequest()) return;
+
+  if (!probe || !probe.success) {
+    renderAsrError(
+      "语音转录",
+      "无法准备音频，请稍后重试。",
+      "重试",
+      () => startAsrTranscription(videoId),
+      null,
+      null,
+    );
+    return;
+  }
+
+  if (probe.permissionMissing) {
+    renderAsrError(
+      "需要授权",
+      `尚未被允许访问 ${probe.endpointHost || "你的转写服务"}，请到设置页保存一次以授权。`,
+      "Open Settings",
+      () => chrome.runtime.sendMessage({ action: "openOptions" }),
+      "重试",
+      () => startAsrTranscription(videoId),
+    );
+    return;
+  }
+
+  if (probe.tooLarge) {
+    renderAsrError(
+      "音频过长",
+      `该视频约 ${probe.minutes} 分钟（${BILI_ASR.formatBytes(
+        probe.estimatedBytes,
+      )}），超过设置上限 ${BILI_ASR.formatBytes(
+        probe.maxBytes,
+      )}。可在设置中调高上限或选择更短的分 P。`,
+      "Open Settings",
+      () => chrome.runtime.sendMessage({ action: "openOptions" }),
+      "重试",
+      () => startAsrTranscription(videoId),
+    );
+    return;
+  }
+
+  renderAsrProgress("正在下载音频…");
+
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "transcribeTranscript",
+      videoId,
+    });
+  } catch (error) {
+    result = { success: false, error: error && error.message };
+  }
+
+  if (!isCurrentRequest()) return;
+
+  if (!result || !result.success) {
+    const msg =
+      (result && (result.message || result.error)) || "转写失败，请重试。";
+
+    if (result && result.error === "asr_not_configured") {
+      renderAsrError(
+        "转写未就绪",
+        msg,
+        "Open Settings",
+        () => chrome.runtime.sendMessage({ action: "openOptions" }),
+        "重试",
+        () => startAsrTranscription(videoId),
+      );
+      return;
+    }
+
+    renderAsrError(
+      "转写失败",
+      msg,
+      "重试",
+      () => startAsrTranscription(videoId),
+      null,
+      null,
+    );
+    return;
+  }
+
+  await applyTranscriptResult(result, videoId);
+}
+
+// ============================================================
 // DIGEST PIPELINE
 // ============================================================
 
@@ -647,6 +854,11 @@ async function startDigest(videoId, videoUrl) {
       );
   }
 
+  // The ASR tab is only for videos without a subtitle track. Reset here and
+  // let applyTranscriptResult / enterAsrMode decide whether to show it.
+  currentVideoNoSubtitle = false;
+  setAsrTabVisible(false);
+
   // Check cache for this video
   const cached = await loadFromCache(videoId);
   if (!isCurrentRequest()) return; // A newer part won the race; drop this one.
@@ -663,6 +875,8 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptSource = cached.transcriptSource === "asr" ? "asr" : "subtitle";
     currentTranscriptTimingEstimated =
       cached.transcriptTimingEstimated === true;
+    currentVideoNoSubtitle = currentTranscriptSource === "asr";
+    setAsrTabVisible(currentVideoNoSubtitle);
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
@@ -736,7 +950,7 @@ async function startDigest(videoId, videoUrl) {
   if (!isCurrentRequest()) return; // A newer part won the race; drop this one.
 
   if (!transcriptResult.success) {
-    await offerTranscriptionFallback(transcriptResult, videoId);
+    await enterAsrMode(transcriptResult.message || transcriptResult.error);
     return;
   }
 
@@ -768,10 +982,19 @@ async function applyTranscriptResult(result, videoId) {
   // translation pipeline, whose target language is already Simplified Chinese).
   currentTranscriptMode = currentNeedsTranslation ? "zh" : "original";
 
+  // The ASR tab is only for videos without a subtitle track. Hide it for normal
+  // subtitle tracks; keep it visible for ASR results and switch to Transcript so
+  // the user sees the actual transcript.
+  currentVideoNoSubtitle = currentTranscriptSource === "asr";
+  setAsrTabVisible(currentVideoNoSubtitle);
+
   // Render transcript immediately (no LLM needed)
   renderTranscript();
   showState("results");
   document.getElementById("tabsNav").style.display = "flex";
+  if (currentTranscriptSource === "asr") {
+    switchTab("transcript");
+  }
   restorePendingTranscriptViewState(videoId);
 
   // Load notes for this video
@@ -793,141 +1016,6 @@ async function loadStoredSettings() {
   } catch (_error) {
     return null;
   }
-}
-
-/**
- * A video with no subtitle track used to be a dead end. When the user has
- * switched hosted speech-to-text on, offer it here — as an explicit,
- * per-video action. It downloads the audio and spends money at their
- * transcription provider, so it must never start by itself.
- *
- * The pre-flight (probeAudio) both labels the button with the real audio
- * length and catches the two cases where offering the button would be a lie:
- * audio over the configured size ceiling, and a missing host permission for
- * the endpoint.
- */
-async function offerTranscriptionFallback(transcriptResult, videoId) {
-  const retry = () => startDigest(videoId, currentVideoUrl);
-  const openSettings = () =>
-    chrome.runtime.sendMessage({ action: "openOptions" });
-  const reason = transcriptResult.message || transcriptResult.error;
-
-  const settings = await loadStoredSettings();
-  if (!settings || !YTD_SETTINGS.asrReady(settings)) {
-    showError("No subtitle found", reason);
-    return;
-  }
-
-  const probe = await chrome.runtime.sendMessage({
-    action: "probeAudio",
-    videoId: videoId,
-  });
-
-  if (!probe || !probe.success) {
-    // We could not size the job, but the user may still want to try.
-    showErrorState(
-      "No subtitle found",
-      reason,
-      { label: "Transcribe audio", action: () => runTranscription(videoId) },
-      { label: "Try Again", action: retry },
-    );
-    return;
-  }
-
-  const minutes = Number(probe.minutes) || 0;
-
-  if (probe.permissionMissing) {
-    showErrorState(
-      "Transcription needs permission",
-      `Bilibili Digest is not allowed to call ${
-        probe.endpointHost || "your transcription service"
-      } yet. Open the settings page and save once to grant access.`,
-      { label: "Open Settings", action: openSettings },
-      { label: "Try Again", action: retry },
-    );
-    return;
-  }
-
-  if (probe.tooLarge) {
-    // Refuse before downloading tens of megabytes only to fail at upload.
-    showErrorState(
-      "Audio too long to transcribe",
-      `This part is about ${minutes} min (${BILI_ASR.formatBytes(
-        probe.estimatedBytes,
-      )}), over the ${BILI_ASR.formatBytes(
-        probe.maxBytes,
-      )} ceiling set for your transcription service. Raise the ceiling in settings or pick a shorter part.`,
-      { label: "Open Settings", action: openSettings },
-      { label: "Try Again", action: retry },
-    );
-    return;
-  }
-
-  showErrorState(
-    "No subtitle found",
-    `${reason} You can transcribe the audio instead.`,
-    {
-      label: minutes
-        ? `Transcribe audio (about ${minutes} min)`
-        : "Transcribe audio",
-      action: () => runTranscription(videoId),
-    },
-    { label: "Try Again", action: retry },
-  );
-}
-
-/** Run the paid speech-to-text pass the user just asked for. */
-async function runTranscription(videoId) {
-  // Claim the request token so a playlist switch (or a second click) always
-  // wins over this longer-running job.
-  const token = ++digestRequestToken;
-  const isCurrentRequest = () => token === digestRequestToken;
-
-  showState("loading");
-  updateLoading("Downloading audio", "");
-
-  let result;
-  try {
-    result = await chrome.runtime.sendMessage({
-      action: "transcribeTranscript",
-      videoId: videoId,
-    });
-  } catch (error) {
-    result = { success: false, error: error && error.message };
-  }
-
-  if (!isCurrentRequest()) return;
-
-  if (!result || !result.success) {
-    const message =
-      (result && result.message) ||
-      (result && result.error) ||
-      "Transcription failed.";
-    const retry = () => startDigest(videoId, currentVideoUrl);
-
-    if (result && result.error === "asr_not_configured") {
-      showErrorState(
-        "Transcription is not ready",
-        message,
-        {
-          label: "Open Settings",
-          action: () => chrome.runtime.sendMessage({ action: "openOptions" }),
-        },
-        { label: "Try Again", action: retry },
-      );
-      return;
-    }
-
-    showErrorState(
-      "Transcription failed",
-      message,
-      { label: "Try Again", action: retry },
-      null,
-    );
-    return;
-  }
-
-  await applyTranscriptResult(result, videoId);
 }
 
 // ============================================================

@@ -353,6 +353,29 @@ var BILI_ASR = (() => {
     return Math.min(Math.max(Math.round(n), 1 * MB), MAX_MAX_BYTES);
   }
 
+  /**
+   * Whether the side-panel "语音转录" tab should treat settings as ready to
+   * offer a transcription. Mirrors the intent of settings.js::asrReady but
+   * stays dependency-free so tests can require asr.js alone.
+   */
+  function asrTabReady(settings) {
+    const s = settings || {};
+    return (
+      s.asrEnabled === true &&
+      typeof s.asrApiKey === "string" &&
+      s.asrApiKey.trim().length > 0 &&
+      typeof s.asrBaseUrl === "string" &&
+      /^https:\/\//i.test(s.asrBaseUrl)
+    );
+  }
+
+  /**
+   * The ASR tab is only offered when a video definitively has no subtitle track.
+   */
+  function shouldShowAsrTab(hasSubtitle) {
+    return hasSubtitle === false;
+  }
+
   return {
     MB,
     PROVIDERS,
@@ -379,6 +402,8 @@ var BILI_ASR = (() => {
     formatBytes,
     estimateAudioBytes,
     clampMaxBytes,
+    asrTabReady,
+    shouldShowAsrTab,
   };
 })();
 

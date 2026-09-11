@@ -249,3 +249,45 @@ test("unknown provider ids fall back instead of breaking the pipeline", () => {
   assert.equal(asr.resolveProvider("").id, "custom");
   assert.deepEqual(asr.modelsFor("custom"), []);
 });
+
+test("asrTabReady is true only when enabled, key, and https endpoint are set", () => {
+  assert.equal(
+    asr.asrTabReady({
+      asrEnabled: true,
+      asrApiKey: "k",
+      asrBaseUrl: "https://api.example.com/v1",
+    }),
+    true,
+  );
+  assert.equal(
+    asr.asrTabReady({
+      asrEnabled: false,
+      asrApiKey: "k",
+      asrBaseUrl: "https://api.example.com/v1",
+    }),
+    false,
+  );
+  assert.equal(
+    asr.asrTabReady({
+      asrEnabled: true,
+      asrApiKey: "",
+      asrBaseUrl: "https://api.example.com/v1",
+    }),
+    false,
+  );
+  assert.equal(
+    asr.asrTabReady({
+      asrEnabled: true,
+      asrApiKey: "k",
+      asrBaseUrl: "http://api.example.com/v1",
+    }),
+    false,
+  );
+  assert.equal(asr.asrTabReady({}), false);
+});
+
+test("shouldShowAsrTab is true only when the video has no subtitle", () => {
+  assert.equal(asr.shouldShowAsrTab(false), true);
+  assert.equal(asr.shouldShowAsrTab(true), false);
+  assert.equal(asr.shouldShowAsrTab(undefined), false);
+});

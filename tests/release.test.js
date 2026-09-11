@@ -282,10 +282,10 @@ test("speech-to-text is opt-in, manual, and permission scoped", () => {
   );
   assert.match(optionsScript, /asrPermissionDenied/);
 
-  // The panel asks for the fallback only when it is switched on...
-  assert.match(sidepanel, /YTD_SETTINGS\.asrReady\(settings\)/);
-  // ...and starts it only from an explicit click, never on its own.
-  assert.match(sidepanel, /action: \(\) => runTranscription\(videoId\)/);
+  // The panel asks for the fallback only when settings are ready...
+  assert.match(sidepanel, /BILI_ASR\.asrTabReady\(settings\)/);
+  // ...and starts it only from an explicit click on the ASR tab, never on its own.
+  assert.match(sidepanel, /primary\.onclick = \(\) => startAsrTranscription\(currentVideoId\)/);
   assert.match(sidepanel, /action: "transcribeTranscript"/);
   // The worker reaches handleTranscribe() from exactly one place: the message
   // router. Nothing in the navigation or fetch flow can trigger a paid

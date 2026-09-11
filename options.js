@@ -111,7 +111,7 @@ const YTD_OPTIONS = (() => {
       asrHeading: "语音转写（可选）",
       asrIntro:
         "部分 B 站视频完全没有字幕。打开此开关后，Bilibili Digest 可以下载音频，并发送给你指定的托管转写服务。它只会在你点击按钮时运行，开关关闭时完全不会启动。",
-      asrEnableLabel: "启用语音转写兜底",
+      asrEnableLabel: "启用语音转写设置",
       asrProviderLabel: "转写服务",
       asrHintSiliconflow: "OpenAI 兼容接口 api.siliconflow.cn，国内可直连。",
       asrHintOpenai: "api.openai.com 的 Whisper 接口，需要能访问境外网络。",

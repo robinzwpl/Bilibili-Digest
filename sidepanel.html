@@ -63,6 +63,9 @@
 
       <!-- Tab navigation -->
       <div class="tabs" id="tabsNav" style="display: none">
+        <button class="tab" data-tab="asr" id="asrTab" style="display: none">
+          语音转录
+        </button>
         <button class="tab active" data-tab="transcript">Transcript</button>
         <button class="tab" data-tab="overview">Overview</button>
         <button class="tab" data-tab="notes">Notes</button>
@@ -113,6 +116,22 @@
 
       <!-- RESULTS -->
       <div id="resultsState" style="display: none">
+        <!-- TAB: 语音转录 (ASR fallback, only when a video has no subtitle) -->
+        <div class="tab-panel" data-panel="asr">
+          <div class="error-container" id="asrContainer">
+            <div class="error-icon" aria-hidden="true">!</div>
+            <div class="error-title" id="asrTitle"></div>
+            <div class="error-message" id="asrMessage"></div>
+            <button class="error-btn" id="asrPrimaryBtn" type="button"></button>
+            <button
+              class="error-btn secondary"
+              id="asrSecondaryBtn"
+              type="button"
+              style="display: none"
+            ></button>
+          </div>
+        </div>
+
         <!-- TAB: Transcript (default - no LLM required) -->
         <div class="tab-panel active" data-panel="transcript">
           <div class="section">
