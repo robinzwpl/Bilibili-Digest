@@ -13,7 +13,9 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js", "platform.js", "wbi.js");
+// asr.js must be available in the service worker because the hosted
+// speech-to-text fallback is handled here.
+importScripts("settings.js", "platform.js", "wbi.js", "asr.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;

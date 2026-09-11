@@ -194,6 +194,16 @@ test("runtime has no source-file credential dependency or retired model", () => 
   assert.match(runtime, /deepseek-v4-flash/);
 });
 
+test("background.js loads the shared asr.js module in the service worker", () => {
+  const background = read("background.js");
+
+  assert.match(
+    background,
+    /importScripts\([^)]*["']asr\.js["'][^)]*\)/,
+    "background.js must import asr.js so BILI_ASR is defined in the service worker",
+  );
+});
+
 test("background reconciles side-panel state after navigation commits", () => {
   const background = read("background.js");
 
