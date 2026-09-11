@@ -1842,6 +1842,12 @@ function switchTab(tabName) {
     });
   }
 
+  // Render the ASR prompt every time the tab becomes active; the panel is empty
+  // by default and its content depends on current settings/subtitle state.
+  if (tabName === "asr") {
+    void renderAsrPrompt();
+  }
+
   // Translate only the visible tab. This prevents hidden surfaces from using
   // tokens or competing with the batch queue the user is waiting for.
   if (tabName === "overview") {
