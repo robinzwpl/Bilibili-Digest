@@ -699,8 +699,23 @@ function renderAsrProgress(text, percent = 0) {
   secondary.style.display = "none";
   secondary.onclick = null;
 
-  if (progressWrap) progressWrap.style.display = "";
-  if (progressBar) progressBar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+  if (progressWrap) {
+    progressWrap.style.display = "";
+    progressWrap.style.width = "100%";
+    progressWrap.style.maxWidth = "280px";
+    progressWrap.style.height = "6px";
+    progressWrap.style.background = "var(--surface-raised)";
+    progressWrap.style.borderRadius = "3px";
+    progressWrap.style.overflow = "hidden";
+    progressWrap.style.margin = "8px 0 16px";
+  }
+  if (progressBar) {
+    progressBar.style.height = "100%";
+    progressBar.style.background = "var(--accent)";
+    progressBar.style.borderRadius = "3px";
+    progressBar.style.transition = "width 0.25s ease";
+    progressBar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+  }
 
   asrProgressText = text;
   asrProgressPercent = percent;
