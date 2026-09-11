@@ -116,12 +116,15 @@
 
       <!-- RESULTS -->
       <div id="resultsState" style="display: none">
-        <!-- TAB: 语音转录 (ASR fallback, only when a video has no subtitle) -->
+        <!-- TAB: 语音转录 (manual speech-to-text, always available) -->
         <div class="tab-panel" data-panel="asr">
           <div class="error-container" id="asrContainer">
             <div class="error-icon" aria-hidden="true">!</div>
             <div class="error-title" id="asrTitle"></div>
             <div class="error-message" id="asrMessage"></div>
+            <div class="asr-progress" id="asrProgressWrap" style="display: none">
+              <div class="asr-progress-bar" id="asrProgressBar" style="width: 0%"></div>
+            </div>
             <button class="error-btn" id="asrPrimaryBtn" type="button"></button>
             <button
               class="error-btn secondary"

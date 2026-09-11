@@ -1072,6 +1072,26 @@ body {
 }
 
 /* ============================================================
+   ASR PROGRESS BAR
+   ============================================================ */
+.asr-progress {
+  width: 100%;
+  max-width: 280px;
+  height: 6px;
+  background: var(--surface-raised);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 8px 0 16px;
+}
+
+.asr-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+
+/* ============================================================
    WELCOME STATE (no video detected)
    ============================================================ */
 .welcome-container {

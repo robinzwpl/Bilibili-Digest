@@ -41,6 +41,12 @@ let currentTranscriptTimingEstimated = false;
 // when the dedicated "语音转录" ASR tab is shown.
 let currentVideoNoSubtitle = false;
 
+// Tracks whether a speech-to-text job is currently running so switching tabs
+// does not accidentally reset its progress UI.
+let asrInProgress = false;
+let asrProgressText = "";
+let asrProgressPercent = 0;
+
 // --- Translation state ---
 // Single-language display: Chinese subtitles show as-is; foreign subtitles are
 // auto-translated to Simplified Chinese. The user-facing mode switcher is
@@ -293,9 +299,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     checkCurrentTab();
     sendResponse({ success: true });
   }
-  if (message.action === "transcriptProgress") {
-    // Background is telling us the transcript fetch status changed
-    updateLoading(message.title, message.subtitle);
+  if (message.action === "asrProgress") {
+    // Background is telling us the ASR download/transcription status changed.
+    asrProgressText = message.title || "";
+    asrProgressPercent = Number(message.percent) || 0;
+    renderAsrProgress(asrProgressText, asrProgressPercent);
     sendResponse({ success: true });
   }
   if (message.action === "noteSaved") {
@@ -650,6 +658,9 @@ async function renderAsrPrompt(_reason) {
   const message = document.getElementById("asrMessage");
   const primary = document.getElementById("asrPrimaryBtn");
   const secondary = document.getElementById("asrSecondaryBtn");
+  const progressWrap = document.getElementById("asrProgressWrap");
+
+  if (progressWrap) progressWrap.style.display = "none";
 
   title.textContent = "语音转录";
   primary.style.display = "";
@@ -673,11 +684,13 @@ async function renderAsrPrompt(_reason) {
   secondary.onclick = null;
 }
 
-function renderAsrProgress(text) {
+function renderAsrProgress(text, percent = 0) {
   const title = document.getElementById("asrTitle");
   const message = document.getElementById("asrMessage");
   const primary = document.getElementById("asrPrimaryBtn");
   const secondary = document.getElementById("asrSecondaryBtn");
+  const progressWrap = document.getElementById("asrProgressWrap");
+  const progressBar = document.getElementById("asrProgressBar");
 
   title.textContent = "语音转录";
   message.textContent = text;
@@ -685,6 +698,12 @@ function renderAsrProgress(text) {
   primary.onclick = null;
   secondary.style.display = "none";
   secondary.onclick = null;
+
+  if (progressWrap) progressWrap.style.display = "";
+  if (progressBar) progressBar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+
+  asrProgressText = text;
+  asrProgressPercent = percent;
 }
 
 function renderAsrError(
@@ -699,6 +718,9 @@ function renderAsrError(
   const message = document.getElementById("asrMessage");
   const primary = document.getElementById("asrPrimaryBtn");
   const secondary = document.getElementById("asrSecondaryBtn");
+  const progressWrap = document.getElementById("asrProgressWrap");
+
+  if (progressWrap) progressWrap.style.display = "none";
 
   title.textContent = titleText;
   message.textContent = msg;
@@ -720,16 +742,21 @@ async function startAsrTranscription(videoId) {
   const token = ++digestRequestToken;
   const isCurrentRequest = () => token === digestRequestToken;
 
-  renderAsrProgress("正在准备音频…");
+  asrInProgress = true;
+  renderAsrProgress("正在准备音频…", 0);
 
   const probe = await chrome.runtime.sendMessage({
     action: "probeAudio",
     videoId,
   });
 
-  if (!isCurrentRequest()) return;
+  if (!isCurrentRequest()) {
+    asrInProgress = false;
+    return;
+  }
 
   if (!probe || !probe.success) {
+    asrInProgress = false;
     renderAsrError(
       "语音转录",
       "无法准备音频，请稍后重试。",
@@ -742,6 +769,7 @@ async function startAsrTranscription(videoId) {
   }
 
   if (probe.permissionMissing) {
+    asrInProgress = false;
     renderAsrError(
       "需要授权",
       `尚未被允许访问 ${probe.endpointHost || "你的转写服务"}，请到设置页保存一次以授权。`,
@@ -754,6 +782,7 @@ async function startAsrTranscription(videoId) {
   }
 
   if (probe.tooLarge) {
+    asrInProgress = false;
     renderAsrError(
       "音频过长",
       `该视频约 ${probe.minutes} 分钟（${BILI_ASR.formatBytes(
@@ -769,7 +798,7 @@ async function startAsrTranscription(videoId) {
     return;
   }
 
-  renderAsrProgress("正在下载音频…");
+  renderAsrProgress("正在下载音频…", 5);
 
   let result;
   try {
@@ -781,9 +810,13 @@ async function startAsrTranscription(videoId) {
     result = { success: false, error: error && error.message };
   }
 
-  if (!isCurrentRequest()) return;
+  if (!isCurrentRequest()) {
+    asrInProgress = false;
+    return;
+  }
 
   if (!result || !result.success) {
+    asrInProgress = false;
     const msg =
       (result && (result.message || result.error)) || "转写失败，请重试。";
 
@@ -810,6 +843,7 @@ async function startAsrTranscription(videoId) {
     return;
   }
 
+  asrInProgress = false;
   await applyTranscriptResult(result, videoId);
 }
 
@@ -1843,9 +1877,14 @@ function switchTab(tabName) {
   }
 
   // Render the ASR prompt every time the tab becomes active; the panel is empty
-  // by default and its content depends on current settings/subtitle state.
+  // by default and its content depends on current settings/subtitle state. If a
+  // transcription job is still running, restore the progress view instead.
   if (tabName === "asr") {
-    void renderAsrPrompt();
+    if (asrInProgress) {
+      renderAsrProgress(asrProgressText, asrProgressPercent);
+    } else {
+      void renderAsrPrompt();
+    }
   }
 
   // Translate only the visible tab. This prevents hidden surfaces from using

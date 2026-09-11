@@ -1028,13 +1028,14 @@ async function installMediaRefererRule() {
   }
 }
 
-/** Push a status line into the side panel's loading state (best effort). */
-function sendTranscribeProgress(title, subtitle) {
+/** Push a status line into the side panel's ASR progress view (best effort). */
+function sendAsrProgress(title, subtitle, percent) {
   try {
     const pending = chrome.runtime.sendMessage({
-      action: "transcriptProgress",
+      action: "asrProgress",
       title: title,
       subtitle: subtitle || "",
+      percent: Number(percent) || 0,
     });
     if (pending && typeof pending.catch === "function") pending.catch(() => {});
   } catch (_) {}
@@ -1112,8 +1113,11 @@ async function fetchBilibiliPlayUrl(aid, cid) {
 /**
  * Download the audio file, trying each mirror in turn.
  * Returns { buffer } or { error, bytes }.
+ *
+ * `onProgress(percent)` is called as bytes arrive. The download phase maps to
+ * 5-100 percent; the caller sends an initial 5% before this function runs.
  */
-async function downloadBilibiliAudio(urls, maxBytes) {
+async function downloadBilibiliAudio(urls, maxBytes, onProgress) {
   await installMediaRefererRule();
   let lastStatus = 0;
 
@@ -1138,15 +1142,61 @@ async function downloadBilibiliAudio(urls, maxBytes) {
       return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: declared };
     }
 
-    const buffer = await res.arrayBuffer();
-    if (!buffer.byteLength) {
-      lastStatus = 0;
+    try {
+      // If the environment doesn't expose a ReadableStream body (unit-test
+      // mocks, older fetch implementations), fall back to arrayBuffer().
+      if (!res.body || typeof res.body.getReader !== "function") {
+        const buffer = await res.arrayBuffer();
+        if (!buffer || !buffer.byteLength) {
+          lastStatus = 0;
+          continue;
+        }
+        if (maxBytes && buffer.byteLength > maxBytes) {
+          return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: buffer.byteLength };
+        }
+        return { buffer: buffer };
+      }
+
+      const reader = res.body.getReader();
+      const chunks = [];
+      let received = 0;
+      const total = declared || 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        if (maxBytes && received > maxBytes) {
+          return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: received };
+        }
+        if (total > 0 && typeof onProgress === "function") {
+          // 5% headroom before download, cap at 100% while reading.
+          const percent = Math.min(100, 5 + Math.round((received / total) * 95));
+          onProgress(percent);
+        }
+      }
+
+      const buffer = new ArrayBuffer(received);
+      const view = new Uint8Array(buffer);
+      let offset = 0;
+      for (const chunk of chunks) {
+        view.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+
+      if (!buffer.byteLength) {
+        lastStatus = 0;
+        continue;
+      }
+      if (maxBytes && buffer.byteLength > maxBytes) {
+        return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: buffer.byteLength };
+      }
+      return { buffer: buffer };
+    } catch (error) {
+      debugLog("[Bilibili Digest BG] audio stream read failed:", error && error.message);
       continue;
     }
-    if (maxBytes && buffer.byteLength > maxBytes) {
-      return { error: ASR_ERRORS.AUDIO_TOO_LARGE, bytes: buffer.byteLength };
-    }
-    return { buffer: buffer };
   }
 
   return { error: ASR_ERRORS.AUDIO_UNAVAILABLE, status: lastStatus };
@@ -1389,8 +1439,10 @@ async function handleTranscribe(pageId) {
 
     const duration = view.duration || play.duration || 0;
 
-    sendTranscribeProgress("Downloading audio", "");
-    const download = await downloadBilibiliAudio(play.urls, settings.asrMaxBytes);
+    sendAsrProgress("正在下载音频…", "", 5);
+    const download = await downloadBilibiliAudio(play.urls, settings.asrMaxBytes, (p) =>
+      sendAsrProgress("正在下载音频…", "", p),
+    );
     if (download.error) {
       if (download.error === ASR_ERRORS.AUDIO_TOO_LARGE) {
         return {
@@ -1414,9 +1466,10 @@ async function handleTranscribe(pageId) {
     }
 
     const minutes = BILI_ASR.audioMinutes(duration);
-    sendTranscribeProgress(
-      "Transcribing audio",
-      minutes ? "About " + minutes + " min of audio" : "",
+    sendAsrProgress(
+      "正在转写音频…",
+      minutes ? "约 " + minutes + " 分钟音频" : "",
+      100,
     );
 
     const result = await transcribeAudioBuffer(download.buffer, settings, duration);
