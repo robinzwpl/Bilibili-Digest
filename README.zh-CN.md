@@ -17,8 +17,6 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 点击查看演示和教学视频（小白友好）：[https://www.bilibili.com/video/BV1dnuq6dEak/](https://www.bilibili.com/video/BV1dnuq6dEak/)
 
-![Bilibili Digest 双语演示](Bilibili%20Digest%20demo%20bilingual.png)
-
 ## v1.4.0 更新
 
 - 为完全没有字幕轨的视频新增语音转写兜底。默认关闭，不增加任何安装期权限，并且只会在你点击 **转写音频** 时运行。
@@ -40,7 +38,7 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 你不需要看懂代码，也不需要会使用命令行。把下面这段话发送给你的编程 Agent：
 
-> 请把这个项目下载或克隆到我选择的长期保留文件夹，告诉我准确的完整路径，并让 Chrome“加载已解压的扩展程序”使用同一个文件夹。如果我在第一次安装时需要位置建议，可以推荐 macOS 或 Linux 上的 `~/Documents/bilibili-digest`，或 Windows 上的 `%USERPROFILE%\Documents\bilibili-digest`，但不要假设我一定使用这些路径。请用简单易懂的语言一步一步指导我完成安装和配置。https://github.com/zarazhangrui/youtube-digest
+> 请把这个项目下载或克隆到我选择的长期保留文件夹，告诉我准确的完整路径，并让 Chrome“加载已解压的扩展程序”使用同一个文件夹。如果我在第一次安装时需要位置建议，可以推荐 macOS 或 Linux 上的 `~/Documents/bilibili-digest`，或 Windows 上的 `%USERPROFILE%\Documents\bilibili-digest`，但不要假设我一定使用这些路径。请用简单易懂的语言一步一步指导我完成安装和配置。https://github.com/robinzwpl/Bilibili-Digest
 
 你的 Agent 应该帮你：
 
@@ -58,7 +56,7 @@ Bilibili Digest 是一个需要自行提供 API Key 的开源项目，通过 Git
 
 如果你想自己操作：
 
-1. 打开 [github.com/zarazhangrui/youtube-digest](https://github.com/zarazhangrui/youtube-digest)。
+1. 打开 [github.com/robinzwpl/Bilibili-Digest](https://github.com/robinzwpl/Bilibili-Digest)。
 2. 点击 **Code**，再选择 **Download ZIP**。
 3. 选择一个长期保留的文件夹，并把项目解压到这里。可选建议是 macOS 或 Linux 上的 `~/Documents/bilibili-digest`，或 Windows 上的 `%USERPROFILE%\Documents\bilibili-digest`。你也可以使用其他文件夹。
 4. 在 Chrome 地址栏打开 `chrome://extensions`。
@@ -270,6 +268,19 @@ Bilibili Digest 不会请求 B 站生成 AI 字幕，唯一的转写路径就是
 - 如果你把本地副本改成了其他模型，请再次使用设置中的自定义 prompt，让编程 Agent 检查本地实现。
 
 不要在对话、截图或日志中分享 API Key、私密字幕或个人笔记。
+
+## 制作发布 ZIP
+
+项目文件夹可以直接作为未打包扩展加载进 Chrome，所以通常不需要任何构建步骤。如果你想要一个可分发的 `.zip`（例如用于 GitHub Release）：
+
+1. 安装 Node.js 和 `zip` 命令。
+2. 运行：
+
+```bash
+npm run package
+```
+
+脚本会把发布白名单文件打包成 `dist/bilibili-digest-v<版本号>.zip`（版本号来自 `manifest.json`）。解压后，照常通过 Chrome 的“加载已解压的扩展程序”选择文件夹即可。
 
 ## 给编程 Agent 的检查命令
 

@@ -15,8 +15,6 @@ Turn every bilibili video into a resource for deep learning. Bilibili Digest bri
 
 Bilibili Digest is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store, does not include API credits, and does not run a developer-operated server.
 
-![Bilibili Digest demo](Bilibili%20Digest%20demo.png)
-
 ## New in v1.4.0
 
 - Speech-to-text fallback for videos that have no subtitle track at all. Off by default, no extra install-time permission, and it only ever runs from the **Transcribe audio** button.
@@ -38,7 +36,7 @@ Bilibili Digest is a bring-your-own-key project installed locally from GitHub. I
 
 You do not need to understand the code or use the command line. Send this message to your coding agent:
 
-> Download or clone this project into a permanent folder I choose, tell me its exact full path, and use that same folder for Chrome's Load unpacked step. If I need a suggestion during this first installation, offer `~/Documents/bilibili-digest` on macOS or Linux, or `%USERPROFILE%\Documents\bilibili-digest` on Windows, but do not assume either path. Walk me through installation and setup in simple terms. https://github.com/zarazhangrui/youtube-digest
+> Download or clone this project into a permanent folder I choose, tell me its exact full path, and use that same folder for Chrome's Load unpacked step. If I need a suggestion during this first installation, offer `~/Documents/bilibili-digest` on macOS or Linux, or `%USERPROFILE%\Documents\bilibili-digest` on Windows, but do not assume either path. Walk me through installation and setup in simple terms. https://github.com/robinzwpl/Bilibili-Digest
 
 Your agent should:
 
@@ -56,7 +54,7 @@ Never paste an API key into an AI chat, source file, screenshot, or public messa
 
 If you prefer to do it yourself:
 
-1. Open [github.com/zarazhangrui/youtube-digest](https://github.com/zarazhangrui/youtube-digest).
+1. Open [github.com/robinzwpl/Bilibili-Digest](https://github.com/robinzwpl/Bilibili-Digest).
 2. Choose **Code**, then **Download ZIP**.
 3. Choose a permanent folder and unzip the project there. Optional suggestions are `~/Documents/bilibili-digest` on macOS or Linux, or `%USERPROFILE%\Documents\bilibili-digest` on Windows. You may use a different folder.
 4. In Chrome, open `chrome://extensions`.
@@ -268,6 +266,19 @@ Bilibili Digest never generates bilibili AI subtitles, and the only transcriptio
 - If you adapted a local copy for another model, use the Settings customization prompt again and ask your coding agent to inspect that local implementation.
 
 Never share API keys, private transcripts, or personal notes in chats, screenshots, or logs.
+
+## Build the release ZIP
+
+The source folder loads directly into Chrome as an unpacked extension, so you normally do not need to build anything. If you want a shareable `.zip` (for a GitHub Release, for example):
+
+1. Install Node.js and a `zip` command.
+2. Run:
+
+```bash
+npm run package
+```
+
+The script packages the release allowlist into `dist/bilibili-digest-v<version>.zip` (the version comes from `manifest.json`). Unzip it, then load the folder through Chrome's **Load unpacked** step as usual.
 
 ## Checks for coding agents
 
