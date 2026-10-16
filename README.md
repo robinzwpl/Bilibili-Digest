@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Note:** This project is derived from the open-source [youtube-digest](https://github.com/zarazhangrui/youtube-digest) project. It has been adapted to work with bilibili videos — the original YouTube transcript source is replaced with bilibili's own CC/AI subtitle tracks.
+> **Note:** This project is derived from [youtube-digest](https://github.com/zarazhangrui/youtube-digest) v1.2.0 by [zarazhangrui](https://github.com/zarazhangrui). It has been adapted to work with bilibili videos — the original YouTube transcript source is replaced with bilibili's own CC/AI subtitle tracks.
 
 Turn every bilibili video into a resource for deep learning. Bilibili Digest brings transcripts, bilingual translation, AI overviews, explanations, and timestamped notes into one Chrome side panel, so you can study ideas and language without losing your place.
 
